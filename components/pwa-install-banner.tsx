@@ -1,7 +1,7 @@
 "use client";
 
 import type { JSX } from "react";
-import { useEffect, useState } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import { Download, Share2, X } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -44,10 +44,35 @@ function readDismissal(): boolean {
   }
 }
 
+function getEnvironment(): number {
+  return (
+    1 |
+    (isIosDevice() ? 2 : 0) |
+    (isStandaloneMode() ? 4 : 0) |
+    (readDismissal() ? 8 : 0)
+  );
+}
+
+function subscribeEnvironment(onChange: () => void): () => void {
+  const query = window.matchMedia("(display-mode: standalone)");
+  query.addEventListener("change", onChange);
+  window.addEventListener("storage", onChange);
+  return () => {
+    query.removeEventListener("change", onChange);
+    window.removeEventListener("storage", onChange);
+  };
+}
+
 export function PwaInstallBanner(): JSX.Element | null {
-  const [isReady, setIsReady] = useState(false);
-  const [isIos, setIsIos] = useState(false);
-  const [isStandalone, setIsStandalone] = useState(false);
+  const environment = useSyncExternalStore(
+    subscribeEnvironment,
+    getEnvironment,
+    () => 0,
+  );
+  const isReady = Boolean(environment & 1);
+  const isIos = Boolean(environment & 2);
+  const [installed, setIsStandalone] = useState(false);
+  const isStandalone = installed || Boolean(environment & 4);
   const [isDismissed, setIsDismissed] = useState(false);
   const [isInstalling, setIsInstalling] = useState(false);
   const [installPrompt, setInstallPrompt] =
@@ -59,11 +84,6 @@ export function PwaInstallBanner(): JSX.Element | null {
         .register("/sw.js", { scope: "/" })
         .catch(() => undefined);
     }
-
-    setIsIos(isIosDevice());
-    setIsStandalone(isStandaloneMode());
-    setIsDismissed(readDismissal());
-    setIsReady(true);
 
     const displayModeQuery = window.matchMedia("(display-mode: standalone)");
 
@@ -118,7 +138,8 @@ export function PwaInstallBanner(): JSX.Element | null {
     }
   }
 
-  if (!isReady || isStandalone || isDismissed) return null;
+  if (!isReady || isStandalone || isDismissed || Boolean(environment & 8))
+    return null;
   if (!installPrompt && !isIos) return null;
 
   const title = isIos

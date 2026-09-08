@@ -238,6 +238,14 @@ export function MainApp({
     stopTracking,
   ]);
 
+  const [silenceRemovalLevel, setSilenceRemovalLevel] =
+    useState<SilenceRemovalLevel>("off");
+  const [silenceRemovedRanges, setSilenceRemovedRanges] = useState<TimeRange[]>(
+    [],
+  );
+  const [isDetectingSilence, setIsDetectingSilence] = useState(false);
+  const silenceDetectionRunIdRef = useRef(0);
+
   const handleVideoSelect = useCallback(
     (file: File) => {
       setUploadedFile(file);
@@ -288,14 +296,7 @@ export function MainApp({
   const [exportQuality, setExportQuality] = useState<"medium" | "high">(
     "medium",
   );
-  const [silenceRemovalLevel, setSilenceRemovalLevel] =
-    useState<SilenceRemovalLevel>("off");
-  const [silenceRemovedRanges, setSilenceRemovedRanges] = useState<TimeRange[]>(
-    [],
-  );
-  const [isDetectingSilence, setIsDetectingSilence] = useState(false);
-  const silenceDetectionRunIdRef = useRef(0);
-  const sourceDuration = videoDuration || videoRef.current?.duration || 0;
+  const sourceDuration = videoDuration;
   const silenceRemovalPlan = useMemo(
     () =>
       sourceDuration > 0 &&
@@ -357,12 +358,11 @@ export function MainApp({
   const {
     downloadVideo,
     cancelDownload,
-    exportDiagnostics,
     isProcessing: isDownloadProcessing,
     progress: downloadProgress,
     status: downloadStatus,
   } = useVideoDownloadMediaBunny({
-    video: videoRef.current,
+    videoRef,
     transcriptChunks: result?.chunks || [],
     subtitleStyle,
     mode,
@@ -380,16 +380,6 @@ export function MainApp({
     autoZoomEnabled,
   });
 
-  const handleRemoveBackground = useCallback(async () => {
-    if (!videoRef.current) return;
-    const dur = videoRef.current.duration || 0;
-    if (dur > 60) {
-      setShowBgConfirm(true);
-      return;
-    }
-    startBgRemoval();
-  }, []);
-
   const startBgRemoval = useCallback(async () => {
     if (!videoRef.current) return;
     setSubtitleStyle((prev) => ({
@@ -405,6 +395,16 @@ export function MainApp({
       );
     }
   }, [processBgRemoval]);
+
+  const handleRemoveBackground = useCallback(async () => {
+    if (!videoRef.current) return;
+    const dur = videoRef.current.duration || 0;
+    if (dur > 60) {
+      setShowBgConfirm(true);
+      return;
+    }
+    startBgRemoval();
+  }, [startBgRemoval]);
 
   const handleCancelBgRemoval = useCallback(() => {
     resetBgRemoval();
@@ -785,13 +785,15 @@ export function MainApp({
             )}
 
             {/* Language selection modal */}
-            <LanguageSelectionModal
-              open={showLanguageModal}
-              onClose={handleModalClose}
-              onConfirm={handleLanguageConfirm}
-              defaultLanguage={language}
-              defaultModelSize={modelSize}
-            />
+            {showLanguageModal && (
+              <LanguageSelectionModal
+                open={showLanguageModal}
+                onClose={handleModalClose}
+                onConfirm={handleLanguageConfirm}
+                defaultLanguage={language}
+                defaultModelSize={modelSize}
+              />
+            )}
 
             {/* Mobile inline tabs — Styling / Edit below download */}
 
@@ -1766,9 +1768,9 @@ export function MainApp({
           <AlertDialogHeader>
             <AlertDialogTitle>Long video</AlertDialogTitle>
             <AlertDialogDescription>
-              This video is {Math.round((videoRef.current?.duration || 0) / 60)}{" "}
-              minutes long. Background removal can take a while on longer
-              videos. Do you want to proceed?
+              This video is {Math.round(videoDuration / 60)} minutes long.
+              Background removal can take a while on longer videos. Do you want
+              to proceed?
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

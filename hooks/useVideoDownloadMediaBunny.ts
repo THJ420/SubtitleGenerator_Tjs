@@ -1,4 +1,10 @@
-import { useState, useCallback, useRef, useEffect } from "react";
+import {
+  useState,
+  useCallback,
+  useRef,
+  useEffect,
+  type RefObject,
+} from "react";
 import {
   Input,
   Output,
@@ -50,7 +56,7 @@ import {
 } from "@/lib/auto-zoom";
 
 interface UseVideoDownloadMediaBunnyProps {
-  video: HTMLVideoElement | null;
+  videoRef: RefObject<HTMLVideoElement | null>;
   transcriptChunks: TranscriptChunk[];
   subtitleStyle: SubtitleStyle;
   mode: "word" | "phrase";
@@ -124,7 +130,7 @@ function findChunkAtTime(
 }
 
 export function useVideoDownloadMediaBunny({
-  video,
+  videoRef,
   transcriptChunks,
   subtitleStyle,
   mode,
@@ -152,6 +158,7 @@ export function useVideoDownloadMediaBunny({
   const progressTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const downloadVideo = useCallback(async () => {
+    const video = videoRef.current;
     if (!video?.src || transcriptChunks.length === 0) {
       console.error("Missing video or transcript data");
       return;
@@ -205,7 +212,7 @@ export function useVideoDownloadMediaBunny({
       let cropX = 0;
       const cropY = 0;
       let cropW = srcW;
-      let cropH = srcH;
+      const cropH = srcH;
       if (ratio === "9:16" && isLandscape) {
         // Target aspect ratio 9:16 — crop width to match, keep full height
         const targetW = Math.round(srcH * (9 / 16));
@@ -450,6 +457,9 @@ export function useVideoDownloadMediaBunny({
         audioSource = new AudioSampleSource({
           codec: format === "webm" ? "opus" : "aac",
           bitrate: 128_000,
+          // Windows AAC encoders reject low-rate input such as 22,050 Hz.
+          // Resample in Mediabunny so all source rates use a supported output rate.
+          transform: { sampleRate: 48_000 },
         });
         output.addAudioTrack(audioSource);
       }
@@ -546,8 +556,8 @@ export function useVideoDownloadMediaBunny({
               0,
               duration,
             )) {
-              if (cancelContextRef.current.cancelRequested) break;
               try {
+                if (cancelContextRef.current.cancelRequested) break;
                 if (silenceRemovalPlan) {
                   const sampleMidpoint =
                     audioSample.timestamp + audioSample.duration / 2;
@@ -1162,7 +1172,9 @@ export function useVideoDownloadMediaBunny({
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);
-        URL.revokeObjectURL(url);
+        // The browser starts reading the blob asynchronously after the click.
+        // Keep it alive long enough for the download to acquire the data.
+        setTimeout(() => URL.revokeObjectURL(url), 60_000);
 
         setStatus("Export complete!");
         setProgress(100);
@@ -1220,7 +1232,7 @@ export function useVideoDownloadMediaBunny({
       cancelContextRef.current.cancelRequested = false;
     }
   }, [
-    video,
+    videoRef,
     transcriptChunks,
     subtitleStyle,
     mode,

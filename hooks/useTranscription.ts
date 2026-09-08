@@ -105,7 +105,7 @@ export function useTranscription() {
   }, []);
 
   const workerMessageHandler = useCallback(
-    (e: MessageEvent) => {
+    function handleWorkerMessage(e: MessageEvent) {
       switch (e.data.status) {
         case "loading":
           updateStatus("loading");
@@ -177,7 +177,7 @@ export function useTranscription() {
           // Terminate worker to free model memory (~800MB-1.2GB for Whisper)
           // Worker will be re-created if user transcribes again
           if (worker.current) {
-            worker.current.removeEventListener("message", workerMessageHandler);
+            worker.current.removeEventListener("message", handleWorkerMessage);
             worker.current.terminate();
             worker.current = null;
           }
@@ -420,6 +420,5 @@ export function useTranscription() {
     startTranscription,
     resetTranscription,
     cancelTranscription,
-    isModelReady: modelReadyRef.current,
   };
 }

@@ -276,6 +276,59 @@ export function useCameraRecording(): UseCameraRecordingReturn {
     }
   }, [facingMode, requestStream, attachStream, syncActiveCamera]);
 
+  const stopRecording = useCallback(async () => {
+    if (!outputRef.current) return;
+
+    clearTimer();
+    clearFrameInterval();
+
+    // Show spinner while MP4 is being finalized
+    setState("finalizing");
+    recordedBytesRef.current = null;
+
+    try {
+      videoSourceRef.current?.close();
+      videoSourceRef.current = null;
+
+      for (const src of audioSourcesRef.current) {
+        src.close();
+      }
+      audioSourcesRef.current = [];
+
+      await outputRef.current.finalize();
+
+      const buffer = (outputRef.current.target as BufferTarget).buffer;
+      if (!buffer) {
+        throw new Error("No output buffer from MP4 encoder.");
+      }
+
+      const recordedBytes = new Uint8Array(buffer).slice();
+      const blob = new Blob([recordedBytes], { type: "video/mp4" });
+      recordedBytesRef.current = recordedBytes;
+      blobRef.current = blob;
+
+      // Stop camera stream so it's not running during review
+      stopTracks();
+      if (previewRef.current) {
+        previewRef.current.srcObject = null;
+      }
+
+      const url = URL.createObjectURL(blob);
+      setRecordedVideoUrl(url);
+      outputRef.current = null;
+
+      // Only transition to recorded AFTER the blob URL is ready
+      setState("recorded");
+    } catch (err) {
+      console.error("Error finalizing MP4:", err);
+      outputRef.current?.cancel();
+      outputRef.current = null;
+      recordedBytesRef.current = null;
+      setError("Failed to finalize recording.");
+      setState("error");
+    }
+  }, [clearTimer, clearFrameInterval, stopTracks]);
+
   const startRecording = useCallback(async () => {
     if (state !== "previewing" || !streamRef.current || !previewRef.current)
       return;
@@ -375,13 +428,11 @@ export function useCameraRecording(): UseCameraRecordingReturn {
       setState("recording");
 
       timerRef.current = setInterval(() => {
-        setElapsedSeconds((prev) => {
-          const next = prev + 1;
-          if (next >= MAX_RECORDING_SECONDS) {
-            stopRecording();
-          }
-          return next;
-        });
+        const elapsed = Math.floor(
+          (Date.now() - recordingStartRef.current) / 1000,
+        );
+        setElapsedSeconds(elapsed);
+        if (elapsed >= MAX_RECORDING_SECONDS) void stopRecording();
       }, 1000);
     } catch (err) {
       console.error("Error starting MP4 recording:", err);
@@ -393,61 +444,7 @@ export function useCameraRecording(): UseCameraRecordingReturn {
       );
       setState("error");
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state, clearFrameInterval]);
-
-  const stopRecording = useCallback(async () => {
-    if (!outputRef.current) return;
-
-    clearTimer();
-    clearFrameInterval();
-
-    // Show spinner while MP4 is being finalized
-    setState("finalizing");
-    recordedBytesRef.current = null;
-
-    try {
-      videoSourceRef.current?.close();
-      videoSourceRef.current = null;
-
-      for (const src of audioSourcesRef.current) {
-        src.close();
-      }
-      audioSourcesRef.current = [];
-
-      await outputRef.current.finalize();
-
-      const buffer = (outputRef.current.target as BufferTarget).buffer;
-      if (!buffer) {
-        throw new Error("No output buffer from MP4 encoder.");
-      }
-
-      const recordedBytes = new Uint8Array(buffer).slice();
-      const blob = new Blob([recordedBytes], { type: "video/mp4" });
-      recordedBytesRef.current = recordedBytes;
-      blobRef.current = blob;
-
-      // Stop camera stream so it's not running during review
-      stopTracks();
-      if (previewRef.current) {
-        previewRef.current.srcObject = null;
-      }
-
-      const url = URL.createObjectURL(blob);
-      setRecordedVideoUrl(url);
-      outputRef.current = null;
-
-      // Only transition to recorded AFTER the blob URL is ready
-      setState("recorded");
-    } catch (err) {
-      console.error("Error finalizing MP4:", err);
-      outputRef.current?.cancel();
-      outputRef.current = null;
-      recordedBytesRef.current = null;
-      setError("Failed to finalize recording.");
-      setState("error");
-    }
-  }, [clearTimer, clearFrameInterval, stopTracks]);
+  }, [state, clearFrameInterval, stopRecording]);
 
   const selectCamera = useCallback(
     async (deviceId: string) => {

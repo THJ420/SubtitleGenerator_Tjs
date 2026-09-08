@@ -59,15 +59,6 @@ export function LanguageSelectionModal({
     useState<ModelSize>(defaultModelSize);
   const [isProcessing, setIsProcessing] = useState(false);
 
-  // Reset state when modal opens
-  React.useEffect(() => {
-    if (open) {
-      setSelectedLanguage(defaultLanguage);
-      setSelectedModelSize(defaultModelSize);
-      setIsProcessing(false);
-    }
-  }, [open, defaultLanguage, defaultModelSize]);
-
   const handleConfirm = () => {
     setIsProcessing(true);
     onConfirm(selectedLanguage, selectedModelSize);

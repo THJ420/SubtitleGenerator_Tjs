@@ -27,11 +27,9 @@ import {
   Plus_Jakarta_Sans,
   Outfit,
   Lilita_One,
-  Noto_Sans,
   Jost,
   Rubik,
   Roboto_Mono,
-  Nunito_Sans,
   Figtree,
 } from "next/font/google";
 import { Toaster } from "sonner";

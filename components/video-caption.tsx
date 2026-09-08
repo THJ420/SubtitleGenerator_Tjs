@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useRef } from "react";
+import React, { useState } from "react";
 import { SubtitleStyle, FONT_FAMILIES } from "./subtitle-styling";
 import {
   processTranscriptChunks,
@@ -301,9 +301,7 @@ export function VideoCaption({
 }: VideoCaptionProps) {
   const splitMode = style.splitSubtitleMode ?? "none";
   // Frozen face X for left-right split: captured once per phrase, not per frame
-  const frozenFaceX = useRef<number>(0.5);
-  // Tracks the last phrase text we saw — used to detect phrase transitions
-  const prevPhraseTextRef = useRef("");
+  const [phraseFace, setPhraseFace] = useState({ text: "", x: 0.5 });
 
   const processedChunks: ProcessedChunk[] = processTranscriptChunks(
     transcript,
@@ -326,12 +324,15 @@ export function VideoCaption({
     currentChunks.length > 0 ? currentChunks.map((c) => c.text).join(" ") : "";
   const isAnimating = currentText !== "";
 
-  // Freeze face X position when the phrase changes (safe to do during render — ref mutation)
-  if (currentText !== prevPhraseTextRef.current) {
-    prevPhraseTextRef.current = currentText;
-    if (splitMode === "left-right" && currentText !== "") {
-      frozenFaceX.current = getFaceX?.() ?? 0.5;
-    }
+  // Capture a position once per phrase and retain it until the next phrase.
+  if (currentText !== phraseFace.text) {
+    setPhraseFace({
+      text: currentText,
+      x:
+        splitMode === "left-right" && currentText !== ""
+          ? (getFaceX?.() ?? 0.5)
+          : phraseFace.x,
+    });
   }
 
   const getCurrentWordInPhrase = (
@@ -671,7 +672,7 @@ export function VideoCaption({
         }
 
         if (splitMode === "left-right") {
-          const facePercent = frozenFaceX.current * 100;
+          const facePercent = phraseFace.x * 100;
           const gap = 7;
           return (
             <>

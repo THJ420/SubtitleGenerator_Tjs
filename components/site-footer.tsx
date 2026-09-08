@@ -65,6 +65,7 @@ export function SiteFooter(): JSX.Element {
               <Image
                 src="/huggingface-logo.svg"
                 alt="Hugging Face"
+                className="h-[14px] w-auto shrink-0"
                 width={14}
                 height={14}
               />
@@ -80,6 +81,7 @@ export function SiteFooter(): JSX.Element {
               <Image
                 src="/mediabunny-logo.svg"
                 alt="MediaBunny"
+                className="h-[14px] w-auto shrink-0"
                 width={14}
                 height={14}
               />
