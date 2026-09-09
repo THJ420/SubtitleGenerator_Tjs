@@ -14,6 +14,7 @@ import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
 import { DebouncedColorInput } from "@/components/ui/debounced-color-input";
 import panelStyles from "@/components/editor-panels.module.css";
+import { getWordEmphasisBackground } from "@/lib/subtitle-appearance";
 
 // Helper to check if a color is effectively transparent
 function isTransparentColor(color: string): boolean {
@@ -43,6 +44,8 @@ function rgbaToHex(rgba: string): string {
 }
 
 export interface SubtitleStyle {
+  uppercase?: boolean;
+  wordEmphasisBackgroundColor?: string;
   fontFamily: string; // Note: FFmpeg uses single font file, family switching limited
   fontSize: number;
   fontWeight: string;
@@ -326,17 +329,22 @@ const PRESETS: SubtitlePreset[] = [
     name: "gold",
     label: "Gold",
     style: {
-      fontFamily: FONT_FAMILIES.permanentMarker.value,
+      fontFamily: FONT_FAMILIES.inter.value,
       fontSize: 16,
-      fontWeight: "600",
-      color: "#F4D35E",
-      backgroundColor: "#1F1300",
+      fontWeight: "700",
+      color: "#FFFFFF",
+      backgroundColor: "transparent",
+      uppercase: false,
+      wordEmphasisEnabled: true,
+      wordEmphasisColorEnabled: true,
+      wordEmphasisColor: "#000000",
+      wordEmphasisBackgroundColor: "#FFE600",
       backgroundStyle: "solid",
       borderWidth: 0,
       borderColor: "#000000",
       dropShadowIntensity: 0.4,
       position: "bottom",
-      maxWordsPerLine: 6,
+      maxWordsPerLine: 3,
     },
   },
   {
@@ -381,6 +389,17 @@ interface PresetButtonProps {
   onApply: () => void;
 }
 
+function getPresetStyle(preset: SubtitlePreset): Partial<SubtitleStyle> {
+  return {
+    uppercase: false,
+    wordEmphasisEnabled: false,
+    wordEmphasisColorEnabled: false,
+    wordEmphasisColor: "#F2D21B",
+    wordEmphasisBackgroundColor: "#000000",
+    ...preset.style,
+  };
+}
+
 function PresetButton({ preset, isActive, onApply }: PresetButtonProps) {
   const presetCssFont =
     fontOptions.find((font) => font.value === preset.style.fontFamily)
@@ -411,13 +430,21 @@ function PresetButton({ preset, isActive, onApply }: PresetButtonProps) {
       >
         <span
           style={
-            isGlassPreset
+            preset.style.wordEmphasisEnabled
               ? {
                   borderRadius: 5,
                   padding: "3px 9px",
-                  background: preset.style.backgroundColor,
+                  background: preset.style.wordEmphasisBackgroundColor,
+                  color: preset.style.wordEmphasisColor,
+                  textShadow: "none",
                 }
-              : undefined
+              : isGlassPreset
+                ? {
+                    borderRadius: 5,
+                    padding: "3px 9px",
+                    background: preset.style.backgroundColor,
+                  }
+                : undefined
           }
         >
           Aa
@@ -429,7 +456,7 @@ function PresetButton({ preset, isActive, onApply }: PresetButtonProps) {
 }
 
 function isPresetActive(style: SubtitleStyle, preset: SubtitlePreset) {
-  return Object.entries(preset.style).every(([key, value]) => {
+  return Object.entries(getPresetStyle(preset)).every(([key, value]) => {
     if (key === "fontSize") return true;
     const styleValue = style[key as keyof SubtitleStyle];
     return styleValue === value;
@@ -530,7 +557,8 @@ export function SubtitleStyling({
 
   const applyPreset = (preset: SubtitlePreset) => {
     // Preserve the user's current font size — presets define visual style, not size
-    onChange({ ...style, ...preset.style, fontSize: style.fontSize });
+    onChange({ ...style, ...getPresetStyle(preset), fontSize: style.fontSize });
+    if (preset.style.wordEmphasisEnabled) onModeChange?.("phrase");
   };
 
   // Find the current font's cssFont value for the trigger preview
@@ -542,6 +570,7 @@ export function SubtitleStyling({
   const previewStyles = useMemo(() => {
     const base: CSSProperties = {
       fontFamily: currentFontCss,
+      textTransform: style.uppercase ? "uppercase" : "none",
       fontSize: style.fontSize,
       fontWeight: style.fontWeight,
       color: style.color,
@@ -592,9 +621,15 @@ export function SubtitleStyling({
                   : undefined,
               backgroundColor:
                 wordEmphasisEnabled && mode === "phrase"
-                  ? "rgba(242,210,27,0.2)"
+                  ? getWordEmphasisBackground(style)
                   : undefined,
               borderRadius: 4,
+              display: "inline-block",
+              padding: "0 0.15em",
+              transform:
+                wordEmphasisEnabled && mode === "phrase"
+                  ? "scale(1.18)"
+                  : undefined,
             }}
           >
             fox
@@ -730,6 +765,21 @@ export function SubtitleStyling({
               </button>
             ))}
           </div>
+        </div>
+
+        <div className="flex items-center justify-between gap-3 rounded-lg border border-border/50 px-3 py-2">
+          <div>
+            <p className="text-sm font-medium">All uppercase</p>
+            <p className="text-xs text-muted-foreground">
+              Off keeps the text as written. Some fonts use capital letter
+              shapes.
+            </p>
+          </div>
+          <Switch
+            checked={style.uppercase ?? false}
+            onCheckedChange={(uppercase) => onChange({ ...style, uppercase })}
+            aria-label="All uppercase"
+          />
         </div>
 
         <div className="space-y-2">
@@ -1044,7 +1094,7 @@ export function SubtitleStyling({
                   <p className="text-xs text-muted-foreground">
                     {mode === "word"
                       ? "Only available in phrase mode"
-                      : "Scale the spoken word and keep the subtle emphasis backdrop."}
+                      : "Scale the spoken word and show its own background color."}
                   </p>
                 </div>
                 <Switch
@@ -1073,6 +1123,37 @@ export function SubtitleStyling({
                   aria-label="Toggle active word emphasis recolor"
                 />
               </div>
+
+              {wordEmphasisEnabled && (
+                <div className="space-y-2">
+                  <p className="text-sm font-medium">Active word background</p>
+                  <p className="text-xs text-muted-foreground">
+                    Works even when the full subtitle background is off.
+                  </p>
+                  <div className="flex items-center gap-2">
+                    <DebouncedColorInput
+                      aria-label="Active word background color"
+                      value={getWordEmphasisBackground(style)}
+                      onChange={(wordEmphasisBackgroundColor) =>
+                        onChange({ ...style, wordEmphasisBackgroundColor })
+                      }
+                      className="w-10 h-10 rounded cursor-pointer"
+                    />
+                    <input
+                      type="text"
+                      aria-label="Active word background color value"
+                      value={getWordEmphasisBackground(style)}
+                      onChange={(event) =>
+                        onChange({
+                          ...style,
+                          wordEmphasisBackgroundColor: event.target.value,
+                        })
+                      }
+                      className="min-w-0 flex-1 rounded-md border border-border px-3 py-2 text-sm bg-background"
+                    />
+                  </div>
+                </div>
+              )}
 
               {wordEmphasisColorEnabled && (
                 <div className="space-y-2">

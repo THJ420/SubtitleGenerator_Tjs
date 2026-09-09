@@ -126,7 +126,7 @@
 }
 .hero {
   position: relative;
-  padding: 55px 0 38px;
+  padding: 16px 0 38px;
 }
 .hero::before {
   content: "";
@@ -1787,9 +1787,6 @@
   color: #7c8294;
 }
 @media (min-width: 1600px) {
-  .hero {
-    padding-top: 70px;
-  }
   .heroGrid {
     gap: 75px;
   }
@@ -1978,7 +1975,7 @@
     height: 85px;
   }
   .hero {
-    padding-top: 32px;
+    padding-top: 20px;
   }
   .heroGrid {
     grid-template-columns: 1fr;
@@ -2244,7 +2241,7 @@
     width: 13px;
   }
   .hero {
-    padding: 24px 0 27px;
+    padding: 16px 0 27px;
   }
   .heroGrid {
     width: calc(100% - 36px);

@@ -51,6 +51,7 @@ import {
 } from "@/hooks/useTranscription";
 import { useVideoDownloadMediaBunny } from "@/hooks/useVideoDownloadMediaBunny";
 import { useBackgroundRemoval } from "@/hooks/useBackgroundRemoval";
+import { getBackgroundRemovalWarningDuration } from "@/lib/background-removal-warning";
 import { useFaceTracking } from "@/hooks/useFaceTracking";
 import { type LanguageCode } from "@/components/language-selector";
 import { LanguageSelectionModal } from "@/components/language-selection-modal";
@@ -94,6 +95,8 @@ interface MainAppProps {
 
 // Default subtitle style - Gold preset
 const DEFAULT_SUBTITLE_STYLE: SubtitleStyle = {
+  uppercase: false,
+  wordEmphasisBackgroundColor: "#000000",
   fontFamily: FONT_FAMILIES.playfairDisplay.value,
   fontSize: 18,
   fontWeight: "600",
@@ -104,7 +107,7 @@ const DEFAULT_SUBTITLE_STYLE: SubtitleStyle = {
   borderColor: "#1A1A1A",
   dropShadowIntensity: 0.55,
   wordEmphasisEnabled: false,
-  wordEmphasisColorEnabled: true,
+  wordEmphasisColorEnabled: false,
   wordEmphasisColor: "#F2D21B",
   windEnabled: false,
   position: "bottom",
@@ -147,7 +150,9 @@ export function MainApp({
   );
   const [showAboutSheet, setShowAboutSheet] = useState(false);
   const [panelExpanded, setPanelExpanded] = useState(false);
-  const [showBgConfirm, setShowBgConfirm] = useState(false);
+  const [bgConfirmationDuration, setBgConfirmationDuration] = useState<
+    number | null
+  >(null);
   const pendingPersonEffectRef = useRef<"depth" | "background">("background");
   const [showResetConfirm, setShowResetConfirm] = useState(false);
   const [selectedWordTimestamp, setSelectedWordTimestamp] = useState<
@@ -446,13 +451,12 @@ export function MainApp({
         return;
       }
       pendingPersonEffectRef.current = effect;
-      const nativeDuration = videoRef.current.duration;
-      const dur =
-        Number.isFinite(nativeDuration) && nativeDuration > 0
-          ? nativeDuration
-          : videoDuration;
-      if (dur > 60) {
-        setShowBgConfirm(true);
+      const warningDuration = getBackgroundRemovalWarningDuration(
+        videoRef.current.duration,
+        videoDuration,
+      );
+      if (warningDuration !== null) {
+        setBgConfirmationDuration(warningDuration);
         return;
       }
       void startBgRemoval(effect);
@@ -675,7 +679,9 @@ export function MainApp({
 
   const handleSeek = useCallback((time: number) => {
     if (videoRef.current) {
-      videoRef.current.currentTime = time;
+      if (Math.abs(videoRef.current.currentTime - time) > 0.001) {
+        videoRef.current.currentTime = time;
+      }
       setCurrentTime(time);
     }
   }, []);
@@ -1210,6 +1216,12 @@ export function MainApp({
                 videoRef={videoRef}
                 transcript={result}
                 duration={videoDuration}
+                file={uploadedFile}
+                silenceRemovalRanges={
+                  silenceRemovalLevel === "off"
+                    ? undefined
+                    : silenceRemovedRanges
+                }
                 fileName={uploadedFile?.name}
                 maxWordsPerLine={subtitleStyle.maxWordsPerLine}
                 onSeek={handleSeek}
@@ -1269,13 +1281,18 @@ export function MainApp({
           ) : null}
         </div>
       </div>
-      <AlertDialog open={showBgConfirm} onOpenChange={setShowBgConfirm}>
+      <AlertDialog
+        open={bgConfirmationDuration !== null}
+        onOpenChange={(open) => {
+          if (!open) setBgConfirmationDuration(null);
+        }}
+      >
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>Long video</AlertDialogTitle>
             <AlertDialogDescription>
-              This video is {Math.round(videoDuration / 60)} minutes long.
-              Background removal can take some time.
+              This video is {formatTime(bgConfirmationDuration ?? 0)} long
+              (minutes:seconds). Background removal can take some time.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

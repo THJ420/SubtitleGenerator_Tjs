@@ -1,3 +1,7 @@
+import {
+  formatSubtitleText,
+  getWordEmphasisBackground,
+} from "@/lib/subtitle-appearance";
 import { SubtitleStyle } from "@/components/subtitle-styling";
 import {
   type WordStyleOverride,
@@ -45,6 +49,20 @@ export function isPhraseChunk(
   return Array.isArray((chunk as { words?: WordTiming[] }).words);
 }
 
+export const WATERMARK_FONT_FAMILY =
+  'Arial, Helvetica, "Segoe UI", Roboto, sans-serif';
+
+export function getBrandingWatermarkMetrics(width: number, height: number) {
+  // Limit the mark by both dimensions so portrait video does not enlarge it.
+  // No fixed pixel minimum: small previews must match the exported proportions.
+  const fontSize = Math.max(0, Math.min(width * 0.014, height * 0.008));
+  return {
+    fontSize,
+    shadowBlur: fontSize * 0.2,
+    shadowOffsetY: fontSize * 0.06,
+  };
+}
+
 export function drawBrandingWatermark(
   ctx: CanvasRenderingContext2D,
   w: number,
@@ -52,18 +70,21 @@ export function drawBrandingWatermark(
   enabled?: boolean,
 ) {
   if (enabled === false) return;
-  const fontSize = Math.max(8, Math.round(h * 0.01));
+  const { fontSize, shadowBlur, shadowOffsetY } = getBrandingWatermarkMetrics(
+    w,
+    h,
+  );
   const paddingX = w * 0.025;
   const paddingY = h * 0.018;
   ctx.save();
-  ctx.font = `700 ${fontSize}px Arial, Helvetica, "Segoe UI", Roboto, sans-serif`;
+  ctx.font = `700 ${fontSize}px ${WATERMARK_FONT_FAMILY}`;
   ctx.fillStyle = "rgba(255, 255, 255, 0.42)";
   ctx.textAlign = "right";
   ctx.textBaseline = "bottom";
   ctx.shadowColor = "rgba(0, 0, 0, 0.5)";
-  ctx.shadowBlur = 3;
+  ctx.shadowBlur = shadowBlur;
   ctx.shadowOffsetX = 0;
-  ctx.shadowOffsetY = 1;
+  ctx.shadowOffsetY = shadowOffsetY;
   ctx.fillText("basedsubs.getbasedapps.com", w - paddingX, h - paddingY);
   ctx.restore();
 }
@@ -78,7 +99,7 @@ export function renderTextLine(
   style: SubtitleStyle,
   baseScale: number = 1,
 ) {
-  const upperText = text.toUpperCase();
+  const upperText = formatSubtitleText(text, style);
   if (style.borderWidth > 0) {
     ctx.save();
     ctx.strokeStyle = style.borderColor;
@@ -127,17 +148,6 @@ export function renderTextLine(
 }
 
 // Helper to determine if a color is light or dark (matches video-caption.tsx logic)
-function isLightColor(color: string): boolean {
-  if (color.startsWith("#")) {
-    const hex = color.slice(1);
-    const r = parseInt(hex.slice(0, 2), 16);
-    const g = parseInt(hex.slice(2, 4), 16);
-    const b = parseInt(hex.slice(4, 6), 16);
-    const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
-    return luminance > 0.5;
-  }
-  return false;
-}
 
 function drawCaptionBackground(
   ctx: CanvasRenderingContext2D,
@@ -219,7 +229,7 @@ export function drawWordText(
   effect?: "knockout",
   charAlphas?: number[],
 ) {
-  const uppercase = text.toUpperCase();
+  const uppercase = formatSubtitleText(text, style);
   const isKnockout = effect === "knockout";
 
   // Per-character rendering when charAlphas provided
@@ -381,7 +391,7 @@ function measurePhraseLineWidth(
   const displayTexts = words.map((word) =>
     word.styleOverride?.emoji
       ? word.styleOverride.emoji
-      : word.text.toUpperCase(),
+      : formatSubtitleText(word.text, style),
   );
   const spaceWidth = 0.35 * finalFontSize;
 
@@ -437,7 +447,7 @@ export function renderPhraseLineWithEmphasis(
   const displayTexts = words.map((word) =>
     word.styleOverride?.emoji
       ? word.styleOverride.emoji
-      : word.text.toUpperCase(),
+      : formatSubtitleText(word.text, style),
   );
   // Match preview spacer span width: 0.35em
   const spaceWidth = 0.35 * finalFontSize;
@@ -477,11 +487,8 @@ export function renderPhraseLineWithEmphasis(
   const highlightPaddingY = finalFontSize * 0.08;
   const highlightRadius = finalFontSize * 0.35;
 
-  // Determine emphasis colors based on text color (matches preview logic)
-  const textIsLight = isLightColor(style.color);
-  const emphasisBgColor = textIsLight
-    ? "rgba(0, 0, 0, 0.65)"
-    : "rgba(255, 255, 255, 0.85)";
+  // The active word has its own background, independent of the caption box.
+  const emphasisBgColor = getWordEmphasisBackground(style);
   const emphasisTextColor = style.wordEmphasisColor ?? "#F2D21B";
 
   // Fade constants
@@ -929,7 +936,7 @@ export function renderSubtitle(
     // Measure maximum line width
     let maxWidth = 0;
     lines.forEach((line) => {
-      const metrics = ctx.measureText(line.toUpperCase());
+      const metrics = ctx.measureText(formatSubtitleText(line, style));
       maxWidth = Math.max(maxWidth, metrics.width);
     });
 
@@ -978,7 +985,7 @@ export function renderSubtitle(
       // Use emoji as display text for measurement when set
       const wordText = word.styleOverride?.emoji
         ? word.styleOverride.emoji
-        : word.text.toUpperCase();
+        : formatSubtitleText(word.text, style);
 
       // Measure with per-word font if needed
       if (word.styleOverride?.fontFamily || word.styleOverride?.fontSize) {
@@ -1087,7 +1094,7 @@ export function renderDynamicSingleWord(
   effect?: "knockout",
   charAlphas?: number[],
 ) {
-  const upperText = text.toUpperCase();
+  const upperText = formatSubtitleText(text, style);
   const isKnockout = effect === "knockout";
 
   // Per-character rendering when charAlphas provided
@@ -1202,7 +1209,7 @@ export function renderDynamicWord(
   style: SubtitleStyle,
   canvas: HTMLCanvasElement,
 ) {
-  const upperText = text.toUpperCase();
+  const upperText = formatSubtitleText(text, style);
   const videoScale = canvas.height / 500;
   const fontSize = Math.round((style.dynamicFontSize ?? 80) * videoScale);
   const maxWidth = canvas.width * 0.85;
@@ -1304,7 +1311,7 @@ export function renderDynamicWordWithOptions(
 
   // Word-wrap into lines, tracking word indices
   // Use emoji as display text when set
-  const rawUpperWords = text.toUpperCase().split(" ");
+  const rawUpperWords = formatSubtitleText(text, style).split(" ");
   const upperWords = rawUpperWords.map((w, i) =>
     wordTimings?.[i]?.styleOverride?.emoji
       ? wordTimings[i].styleOverride!.emoji!

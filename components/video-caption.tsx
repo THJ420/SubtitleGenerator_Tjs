@@ -10,6 +10,7 @@ import {
   type WordStyleOverride,
 } from "@/lib/transcript-utils";
 import { cn } from "@/lib/utils";
+import { getWordEmphasisBackground } from "@/lib/subtitle-appearance";
 
 const fontOptions = Object.values(FONT_FAMILIES);
 
@@ -17,18 +18,6 @@ const fontOptions = Object.values(FONT_FAMILIES);
 function resolveCssFont(fontFamily: string): string {
   const match = fontOptions.find((f) => f.value === fontFamily);
   return match?.cssFont ?? fontFamily;
-}
-
-function isLightColor(color: string): boolean {
-  if (color.startsWith("#")) {
-    const hex = color.slice(1);
-    const r = parseInt(hex.slice(0, 2), 16);
-    const g = parseInt(hex.slice(2, 4), 16);
-    const b = parseInt(hex.slice(4, 6), 16);
-    const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
-    return luminance > 0.5;
-  }
-  return false;
 }
 
 function getCaptionBackgroundStyles(style: SubtitleStyle): React.CSSProperties {
@@ -83,10 +72,7 @@ function PhraseWordList({
           word.timestamp[0] === currentWordInPhrase.timestamp[0];
 
         const wordColor = word.styleOverride?.color ?? style.color;
-        const textIsLight = isLightColor(wordColor);
-        const emphasisBgColor = textIsLight
-          ? "rgba(0, 0, 0, 0.65)"
-          : "rgba(255, 255, 255, 0.85)";
+        const emphasisBgColor = getWordEmphasisBackground(style);
         const emphasisTextColor = style.wordEmphasisColor ?? "#F2D21B";
         const resizeActive =
           !!isCurrentWord && (style.wordEmphasisEnabled ?? false);
@@ -420,7 +406,7 @@ export function VideoCaption({
 
   const baseTypographyStyles: React.CSSProperties = {
     color: style.color,
-    textTransform: "uppercase",
+    textTransform: style.uppercase ? "uppercase" : "none",
     letterSpacing: "0.05em",
     WebkitTextStroke: previewStroke,
     paintOrder: "stroke fill",

@@ -1,3 +1,7 @@
+import {
+  formatSubtitleText,
+  getWordEmphasisBackground,
+} from "@/lib/subtitle-appearance";
 import { SubtitleStyle } from "@/components/subtitle-styling";
 import {
   processTranscriptChunks,
@@ -27,18 +31,6 @@ interface WordTiming {
 
 export interface FaceBounds {
   chinY: number; // Y coordinate of estimated chin in canvas pixels
-}
-
-function isLightColor(color: string): boolean {
-  if (color.startsWith("#")) {
-    const hex = color.slice(1);
-    const r = parseInt(hex.slice(0, 2), 16);
-    const g = parseInt(hex.slice(2, 4), 16);
-    const b = parseInt(hex.slice(4, 6), 16);
-    const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
-    return luminance > 0.5;
-  }
-  return false;
 }
 
 function drawCaptionBackground(
@@ -502,7 +494,7 @@ function renderDynamicTextBlock(
 
   // Word-wrap into lines (indices track which wordTimings belong to each line)
   // Use emoji as display text when set
-  const rawUpperWords = text.toUpperCase().split(" ");
+  const rawUpperWords = formatSubtitleText(text, style).split(" ");
   const upperWords = rawUpperWords.map((w, i) =>
     wordTimings?.[i]?.styleOverride?.emoji
       ? wordTimings[i].styleOverride!.emoji!
@@ -723,7 +715,7 @@ function renderDynamicWord(
   effect?: "knockout",
   charAlphas?: number[],
 ) {
-  const upperText = text.toUpperCase();
+  const upperText = formatSubtitleText(text, style);
   const isKnockout = effect === "knockout";
 
   // Per-character rendering when charAlphas provided
@@ -929,7 +921,7 @@ function renderChunkToCanvas(
 
     let maxWidth = 0;
     lines.forEach((line) => {
-      const metrics = ctx.measureText(line.toUpperCase());
+      const metrics = ctx.measureText(formatSubtitleText(line, style));
       maxWidth = Math.max(maxWidth, metrics.width);
     });
 
@@ -975,7 +967,7 @@ function renderChunkToCanvas(
       // Use emoji as display text for measurement when set
       const wordText = word.styleOverride?.emoji
         ? word.styleOverride.emoji
-        : word.text.toUpperCase();
+        : formatSubtitleText(word.text, style);
 
       // Measure with per-word font if needed
       if (word.styleOverride?.fontFamily || word.styleOverride?.fontSize) {
@@ -1072,7 +1064,7 @@ function renderTextLine(
   style: SubtitleStyle,
   baseScale: number = 1,
 ) {
-  const upperText = text.toUpperCase();
+  const upperText = formatSubtitleText(text, style);
   if (style.borderWidth > 0) {
     ctx.save();
     ctx.strokeStyle = style.borderColor;
@@ -1135,7 +1127,7 @@ function measurePhraseLineWidth(
   const displayTexts = words.map((word) =>
     word.styleOverride?.emoji
       ? word.styleOverride.emoji
-      : word.text.toUpperCase(),
+      : formatSubtitleText(word.text, style),
   );
   const spaceWidth = 0.35 * finalFontSize;
 
@@ -1197,7 +1189,7 @@ function renderPhraseLineWithEmphasis(
   const displayTexts = words.map((word) =>
     word.styleOverride?.emoji
       ? word.styleOverride.emoji
-      : word.text.toUpperCase(),
+      : formatSubtitleText(word.text, style),
   );
   const spaceWidth = 0.35 * finalFontSize;
   const scales = words.map((word) =>
@@ -1230,10 +1222,7 @@ function renderPhraseLineWithEmphasis(
   const highlightPaddingY = finalFontSize * 0.08;
   const highlightRadius = finalFontSize * 0.35;
 
-  const textIsLight = isLightColor(style.color);
-  const emphasisBgColor = textIsLight
-    ? "rgba(0, 0, 0, 0.65)"
-    : "rgba(255, 255, 255, 0.85)";
+  const emphasisBgColor = getWordEmphasisBackground(style);
   const emphasisTextColor = style.wordEmphasisColor ?? "#F2D21B";
 
   // Fade constants
@@ -1393,7 +1382,7 @@ function drawWordText(
   effect?: "knockout",
   charAlphas?: number[],
 ) {
-  const uppercase = text.toUpperCase();
+  const uppercase = formatSubtitleText(text, style);
   const isKnockout = effect === "knockout";
 
   // Per-character rendering when charAlphas provided

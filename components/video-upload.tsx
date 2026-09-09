@@ -43,7 +43,11 @@ import {
   renderDynamicFrontText,
   estimateFaceFromMask,
 } from "@/lib/render-subtitle";
-import { drawBrandingWatermark } from "@/lib/export-renderer";
+import {
+  drawBrandingWatermark,
+  getBrandingWatermarkMetrics,
+  WATERMARK_FONT_FAMILY,
+} from "@/lib/export-renderer";
 import { computeCropX } from "@/lib/person-tracking";
 import {
   adjustTranscriptChunksForSilenceRemoval,
@@ -857,6 +861,11 @@ const VideoUploadComponent = forwardRef<HTMLVideoElement, VideoUploadProps>(
       };
     }, [needsFaceTrackCanvas, ref, ratio, getCenterX, videoSrc]);
 
+    const watermark = getBrandingWatermarkMetrics(
+      containerWidth,
+      containerWidth * (ratio === "16:9" ? 9 / 16 : 16 / 9),
+    );
+
     return (
       <div
         className={cn(
@@ -956,12 +965,11 @@ const VideoUploadComponent = forwardRef<HTMLVideoElement, VideoUploadProps>(
                     <div
                       className="absolute bottom-[1.8%] right-[2.5%] pointer-events-none z-20"
                       style={{
-                        fontSize: "clamp(7px, 1vw, 11px)",
+                        fontSize: watermark.fontSize,
                         fontWeight: 700,
-                        fontFamily: "system-ui, -apple-system, sans-serif",
+                        fontFamily: WATERMARK_FONT_FAMILY,
                         color: "rgba(255, 255, 255, 0.42)",
-                        textShadow: "0 1px 3px rgba(0, 0, 0, 0.5)",
-                        letterSpacing: "0.02em",
+                        textShadow: `0 ${watermark.shadowOffsetY}px ${watermark.shadowBlur}px rgba(0, 0, 0, 0.5)`,
                       }}
                     >
                       basedsubs.getbasedapps.com
