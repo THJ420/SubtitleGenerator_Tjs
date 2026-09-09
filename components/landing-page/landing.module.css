@@ -832,11 +832,15 @@
 .backgroundDemo {
   height: 138px;
 }
-.checkerboard {
+.backgroundAfter {
   position: absolute;
-  inset: 0 0 0 55%;
-  background: repeating-conic-gradient(#fff 0% 25%, #e2e2e4 0% 50%) 50% / 16px
-    16px;
+  inset: 0;
+  clip-path: inset(0 0 0 55%);
+}
+.backgroundAfter::after {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 55%;
   border-left: 2px solid #fff;
 }
 .comparisonHandle {

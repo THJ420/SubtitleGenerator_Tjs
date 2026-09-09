@@ -87,7 +87,15 @@ function FaceDemo({
       />
       {removeBackground ? (
         <>
-          <div className={styles.checkerboard} />
+          <div className={styles.backgroundAfter}>
+            <Image
+              src="/creator-background-demo.webp"
+              alt=""
+              width={1200}
+              height={800}
+              sizes="150px"
+            />
+          </div>
           <span className={styles.comparisonHandle}>‹ ›</span>
         </>
       ) : (
