@@ -38,6 +38,7 @@ import "./globals.css";
 import { cn } from "@/lib/utils";
 
 const robotoMono = Roboto_Mono({
+  preload: false,
   subsets: [
     "cyrillic",
     "cyrillic-ext",
@@ -51,6 +52,7 @@ const robotoMono = Roboto_Mono({
 });
 
 const rubik = Rubik({
+  preload: false,
   subsets: [
     "arabic",
     "cyrillic",
@@ -64,6 +66,7 @@ const rubik = Rubik({
 });
 
 const jost = Jost({
+  preload: false,
   subsets: ["cyrillic", "latin", "latin-ext"],
   weight: ["100", "200", "300", "400", "500", "600", "700", "800", "900"],
   variable: "--font-jost",
@@ -72,11 +75,13 @@ const jost = Jost({
 const figtree = Figtree({ subsets: ["latin"], variable: "--font-sans" });
 
 const geistSans = Geist({
+  preload: false,
   variable: "--font-geist-sans",
   subsets: ["latin"],
 });
 
 const geistMono = Geist_Mono({
+  preload: false,
   variable: "--font-geist-mono",
   subsets: ["latin"],
 });
@@ -85,6 +90,7 @@ const montserrat = Montserrat({
   variable: "--font-montserrat",
   subsets: ["latin"],
   weight: ["400", "600", "700", "900"],
+  preload: false,
   display: "swap",
 });
 
@@ -92,6 +98,7 @@ const bebasNeue = Bebas_Neue({
   variable: "--font-bebas-neue",
   subsets: ["latin"],
   weight: "400",
+  preload: false,
   display: "swap",
 });
 
@@ -99,6 +106,7 @@ const poppins = Poppins({
   variable: "--font-poppins",
   subsets: ["latin"],
   weight: ["400", "500", "600", "700"],
+  preload: false,
   display: "swap",
 });
 
@@ -106,6 +114,7 @@ const oswald = Oswald({
   variable: "--font-oswald",
   subsets: ["latin"],
   weight: ["400", "500", "600"],
+  preload: false,
   display: "swap",
 });
 
@@ -113,6 +122,7 @@ const anton = Anton({
   variable: "--font-anton",
   subsets: ["latin"],
   weight: "400",
+  preload: false,
   display: "swap",
 });
 
@@ -120,6 +130,7 @@ const bangers = Bangers({
   variable: "--font-bangers",
   subsets: ["latin"],
   weight: "400",
+  preload: false,
   display: "swap",
 });
 
@@ -127,6 +138,7 @@ const fredoka = Fredoka({
   variable: "--font-fredoka",
   subsets: ["latin"],
   weight: ["400", "500", "600", "700"],
+  preload: false,
   display: "swap",
 });
 
@@ -134,6 +146,7 @@ const righteous = Righteous({
   variable: "--font-righteous",
   subsets: ["latin"],
   weight: "400",
+  preload: false,
   display: "swap",
 });
 
@@ -141,6 +154,7 @@ const nunito = Nunito({
   variable: "--font-nunito",
   subsets: ["latin"],
   weight: ["400", "500", "600", "700"],
+  preload: false,
   display: "swap",
 });
 
@@ -148,6 +162,7 @@ const roboto = Roboto({
   variable: "--font-roboto",
   subsets: ["latin"],
   weight: ["400", "500", "700"],
+  preload: false,
   display: "swap",
 });
 
@@ -155,6 +170,7 @@ const openSans = Open_Sans({
   variable: "--font-open-sans",
   subsets: ["latin"],
   weight: ["400", "500", "600", "700"],
+  preload: false,
   display: "swap",
 });
 
@@ -162,6 +178,7 @@ const inter = Inter({
   variable: "--font-inter",
   subsets: ["latin"],
   weight: ["400", "500", "600", "700", "900"],
+  preload: false,
   display: "swap",
 });
 
@@ -169,6 +186,7 @@ const permanentMarker = Permanent_Marker({
   variable: "--font-permanent-marker",
   subsets: ["latin"],
   weight: "400",
+  preload: false,
   display: "swap",
 });
 
@@ -176,6 +194,7 @@ const pacifico = Pacifico({
   variable: "--font-pacifico",
   subsets: ["latin"],
   weight: "400",
+  preload: false,
   display: "swap",
 });
 
@@ -183,6 +202,7 @@ const lobster = Lobster({
   variable: "--font-lobster",
   subsets: ["latin"],
   weight: "400",
+  preload: false,
   display: "swap",
 });
 
@@ -190,6 +210,7 @@ const alfaSlabOne = Alfa_Slab_One({
   variable: "--font-alfa-slab-one",
   subsets: ["latin"],
   weight: "400",
+  preload: false,
   display: "swap",
 });
 
@@ -197,6 +218,7 @@ const staatliches = Staatliches({
   variable: "--font-staatliches",
   subsets: ["latin"],
   weight: "400",
+  preload: false,
   display: "swap",
 });
 
@@ -204,6 +226,7 @@ const fugazOne = Fugaz_One({
   variable: "--font-fugaz-one",
   subsets: ["latin"],
   weight: "400",
+  preload: false,
   display: "swap",
 });
 
@@ -211,6 +234,7 @@ const chewy = Chewy({
   variable: "--font-chewy",
   subsets: ["latin"],
   weight: "400",
+  preload: false,
   display: "swap",
 });
 
@@ -218,6 +242,7 @@ const playfairDisplay = Playfair_Display({
   variable: "--font-playfair-display",
   subsets: ["latin"],
   weight: ["400", "500", "600", "700"],
+  preload: false,
   display: "swap",
 });
 
@@ -225,6 +250,7 @@ const lora = Lora({
   variable: "--font-lora",
   subsets: ["latin"],
   weight: ["400", "500", "600", "700"],
+  preload: false,
   display: "swap",
 });
 
@@ -232,6 +258,7 @@ const plusJakartaSans = Plus_Jakarta_Sans({
   variable: "--font-plus-jakarta-sans",
   subsets: ["latin"],
   weight: ["400", "500", "600", "700", "800"],
+  preload: true,
   display: "swap",
 });
 
@@ -239,6 +266,7 @@ const outfit = Outfit({
   variable: "--font-outfit",
   subsets: ["latin"],
   weight: ["400", "500", "600", "700"],
+  preload: false,
   display: "swap",
 });
 
@@ -246,6 +274,7 @@ const lilitaOne = Lilita_One({
   variable: "--font-lilita-one",
   subsets: ["latin"],
   weight: "400",
+  preload: false,
   display: "swap",
 });
 

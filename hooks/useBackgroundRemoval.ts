@@ -1,4 +1,9 @@
 import { useState, useCallback, useRef, useEffect } from "react";
+import {
+  releaseVideo,
+  seekVideo,
+  waitForMediaEvent,
+} from "@/lib/media-lifecycle";
 
 export interface MaskData {
   data: Uint8Array;
@@ -11,7 +16,10 @@ interface UseBackgroundRemovalReturn {
   isProcessing: boolean;
   progress: number;
   isReady: boolean;
-  processVideo: (videoElement: HTMLVideoElement) => Promise<void>;
+  processVideo: (
+    videoElement: HTMLVideoElement,
+    knownDuration?: number,
+  ) => Promise<void>;
   getMaskAtTime: (time: number, fps?: number) => MaskData | null;
   reset: () => void;
   processFrame: (
@@ -33,6 +41,14 @@ export function useBackgroundRemoval(): UseBackgroundRemovalReturn {
   const workerRef = useRef<Worker | null>(null);
   const modelReadyRef = useRef(false);
   const masksRef = useRef<MaskData[]>([]);
+  const processingRef = useRef<AbortController | null>(null);
+  const modelLoadRef = useRef<{
+    promise: Promise<void>;
+    resolve: () => void;
+    reject: (error: Error) => void;
+  } | null>(null);
+  const requestIdRef = useRef(0);
+  const generationRef = useRef(0);
   const pendingFramesRef = useRef<
     Map<
       number,
@@ -40,16 +56,34 @@ export function useBackgroundRemoval(): UseBackgroundRemovalReturn {
     >
   >(new Map());
 
+  const disposeWorker = useCallback(
+    (error: Error = new DOMException("Cancelled", "AbortError")) => {
+      generationRef.current++;
+      workerRef.current?.terminate();
+      workerRef.current = null;
+      modelReadyRef.current = false;
+      modelLoadRef.current?.reject(error);
+      modelLoadRef.current = null;
+      for (const pending of pendingFramesRef.current.values())
+        pending.reject(error);
+      pendingFramesRef.current.clear();
+    },
+    [],
+  );
+
   // Initialize worker
   const getWorker = useCallback(() => {
     if (!workerRef.current) {
-      workerRef.current = new Worker(
+      const worker = new Worker(
         new URL("../app/bg-removal-worker.ts", import.meta.url),
         { type: "module" },
       );
+      workerRef.current = worker;
 
-      workerRef.current.addEventListener("message", (e: MessageEvent) => {
-        const { status, data, frameIndex, mask, width, height } = e.data;
+      worker.addEventListener("message", (e: MessageEvent) => {
+        if (worker !== workerRef.current) return;
+        const { status, data, frameIndex, requestId, mask, width, height } =
+          e.data;
 
         switch (status) {
           case "loading":
@@ -59,111 +93,130 @@ export function useBackgroundRemoval(): UseBackgroundRemovalReturn {
           case "ready":
             setIsModelLoading(false);
             modelReadyRef.current = true;
+            modelLoadRef.current?.resolve();
+            modelLoadRef.current = null;
             break;
 
           case "error": {
             setIsModelLoading(false);
             console.error("[useBackgroundRemoval] Worker error:", data);
             // Reject any pending frame promise for this frameIndex
-            if (frameIndex !== undefined) {
-              const pending = pendingFramesRef.current.get(frameIndex);
+            if (requestId !== undefined) {
+              const pending = pendingFramesRef.current.get(requestId);
               if (pending) {
                 pending.reject(new Error(data));
-                pendingFramesRef.current.delete(frameIndex);
+                pendingFramesRef.current.delete(requestId);
               }
+            } else {
+              disposeWorker(new Error(data));
             }
             break;
           }
 
           case "mask-ready": {
             const maskData: MaskData = {
-              data: new Uint8Array(mask),
+              data: mask instanceof Uint8Array ? mask : new Uint8Array(mask),
               width,
               height,
             };
 
             // Store in ref for immediate access
-            masksRef.current[frameIndex] = maskData;
-
             // Resolve pending promise
-            const pending = pendingFramesRef.current.get(frameIndex);
+            const pending = pendingFramesRef.current.get(requestId);
             if (pending) {
+              masksRef.current[frameIndex] = maskData;
               pending.resolve(maskData);
-              pendingFramesRef.current.delete(frameIndex);
+              pendingFramesRef.current.delete(requestId);
             }
             break;
           }
         }
       });
+      worker.addEventListener("error", (event) => {
+        if (worker !== workerRef.current) return;
+        setIsModelLoading(false);
+        disposeWorker(
+          new Error(
+            event.message || "The background worker stopped unexpectedly.",
+          ),
+        );
+      });
     }
     return workerRef.current;
-  }, []);
+  }, [disposeWorker]);
 
   // Ensure model is loaded
   const ensureModelLoaded = useCallback(async (): Promise<void> => {
     if (modelReadyRef.current) return;
+    if (modelLoadRef.current) return modelLoadRef.current.promise;
 
     const worker = getWorker();
 
-    return new Promise((resolve, reject) => {
-      const handler = (e: MessageEvent) => {
-        if (e.data.status === "ready") {
-          worker.removeEventListener("message", handler);
-          resolve();
-        } else if (e.data.status === "error") {
-          worker.removeEventListener("message", handler);
-          reject(new Error(e.data.data));
-        }
-      };
-
-      worker.addEventListener("message", handler);
-
-      // Try WebGPU first, same as the transcription worker
-      const device =
-        typeof navigator !== "undefined" && "gpu" in navigator
-          ? "webgpu"
-          : "wasm";
-      worker.postMessage({ type: "load", data: { device } });
+    let resolve!: () => void;
+    let reject!: (error: Error) => void;
+    const promise = new Promise<void>((onResolve, onReject) => {
+      resolve = onResolve;
+      reject = onReject;
     });
+    modelLoadRef.current = { promise, resolve, reject };
+    const device =
+      typeof navigator !== "undefined" && "gpu" in navigator
+        ? "webgpu"
+        : "wasm";
+    worker.postMessage({ type: "load", data: { device } });
+    return promise;
   }, [getWorker]);
 
   // Process a single frame and return a promise for the mask
   const processFrame = useCallback(
-    (
+    async (
       imageData: Uint8ClampedArray,
       width: number,
       height: number,
       frameIndex: number,
     ): Promise<MaskData> => {
+      const generation = generationRef.current;
+      await ensureModelLoaded();
+      if (generation !== generationRef.current)
+        throw new DOMException("Cancelled", "AbortError");
       const worker = getWorker();
+      const requestId = ++requestIdRef.current;
 
       return new Promise((resolve, reject) => {
-        pendingFramesRef.current.set(frameIndex, { resolve, reject });
+        pendingFramesRef.current.set(requestId, { resolve, reject });
         worker.postMessage({
           type: "process-frame",
-          data: { imageData, width, height, frameIndex },
+          data: { imageData, width, height, frameIndex, requestId },
         });
       });
     },
-    [getWorker],
+    [getWorker, ensureModelLoaded],
   );
 
   // Process entire video for preview masks
   const processVideo = useCallback(
-    async (videoElement: HTMLVideoElement) => {
+    async (videoElement: HTMLVideoElement, knownDuration?: number) => {
+      processingRef.current?.abort();
+      disposeWorker();
+      const controller = new AbortController();
+      processingRef.current = controller;
+      const { signal } = controller;
+      let processingVideo: HTMLVideoElement | null = null;
       setIsProcessing(true);
       setProgress(0);
       setIsReady(false);
       masksRef.current = [];
 
       try {
-        // Load model first
-        await ensureModelLoaded();
-
-        const duration = videoElement.duration;
-        if (!duration || !isFinite(duration)) {
+        const duration =
+          Number.isFinite(videoElement.duration) && videoElement.duration > 0
+            ? videoElement.duration
+            : knownDuration;
+        if (!duration || !Number.isFinite(duration) || duration <= 0) {
           throw new Error("Invalid video duration");
         }
+        await ensureModelLoaded();
+        signal.throwIfAborted();
 
         const totalFrames = Math.ceil(duration * SAMPLE_FPS);
 
@@ -183,15 +236,15 @@ export function useBackgroundRemoval(): UseBackgroundRemovalReturn {
         }
 
         // Create a cloned video to avoid interfering with playback
-        const processingVideo = document.createElement("video");
-        processingVideo.src = videoElement.src;
+        processingVideo = document.createElement("video");
         processingVideo.muted = true;
         processingVideo.preload = "auto";
 
-        await new Promise<void>((resolve, reject) => {
-          processingVideo.onloadeddata = () => resolve();
-          processingVideo.onerror = () =>
-            reject(new Error("Failed to load processing video"));
+        await waitForMediaEvent(processingVideo, "loadeddata", {
+          signal,
+          start: () => {
+            processingVideo!.src = videoElement.src;
+          },
         });
 
         // Process frames sequentially using seek
@@ -199,14 +252,11 @@ export function useBackgroundRemoval(): UseBackgroundRemovalReturn {
           const time = i / SAMPLE_FPS;
 
           // Seek to target time
-          await new Promise<void>((resolve) => {
-            const onSeeked = () => {
-              processingVideo.removeEventListener("seeked", onSeeked);
-              resolve();
-            };
-            processingVideo.addEventListener("seeked", onSeeked);
-            processingVideo.currentTime = Math.min(time, duration - 0.01);
-          });
+          await seekVideo(
+            processingVideo,
+            Math.max(0, Math.min(time, duration - 0.01)),
+            signal,
+          );
 
           // Draw frame to canvas
           ctx.drawImage(processingVideo, 0, 0, canvas.width, canvas.height);
@@ -214,36 +264,31 @@ export function useBackgroundRemoval(): UseBackgroundRemovalReturn {
 
           // Send to worker and wait for result
           await processFrame(imageData.data, canvas.width, canvas.height, i);
+          signal.throwIfAborted();
 
           // Update progress
           const pct = Math.round(((i + 1) / totalFrames) * 100);
           setProgress(pct);
         }
 
-        // Cleanup processing video
-        processingVideo.onloadeddata = null;
-        processingVideo.onerror = null;
-        processingVideo.src = "";
-        processingVideo.load();
-
-        // Terminate worker to free segmentation model memory (~500MB-1GB)
-        // Worker will be re-created on demand if needed for export
-        if (workerRef.current) {
-          workerRef.current.terminate();
-          workerRef.current = null;
-        }
-        modelReadyRef.current = false;
-
         setIsReady(true);
       } catch (error) {
+        if (signal.aborted) return;
+        masksRef.current = [];
         console.error("[useBackgroundRemoval] Processing failed:", error);
         setIsReady(false);
         throw error;
       } finally {
-        setIsProcessing(false);
+        if (processingVideo) releaseVideo(processingVideo);
+        if (processingRef.current === controller) {
+          processingRef.current = null;
+          disposeWorker();
+          setIsModelLoading(false);
+          setIsProcessing(false);
+        }
       }
     },
-    [ensureModelLoaded, processFrame],
+    [disposeWorker, ensureModelLoaded, processFrame],
   );
 
   // Get the nearest cached mask for a given video time
@@ -264,22 +309,25 @@ export function useBackgroundRemoval(): UseBackgroundRemovalReturn {
 
   // Reset all state
   const reset = useCallback(() => {
+    processingRef.current?.abort();
+    processingRef.current = null;
+    disposeWorker();
     masksRef.current = [];
-    pendingFramesRef.current = new Map();
+    setIsModelLoading(false);
     setIsReady(false);
     setIsProcessing(false);
     setProgress(0);
-  }, []);
+  }, [disposeWorker]);
 
   // Cleanup on unmount
   useEffect(() => {
     return () => {
-      if (workerRef.current) {
-        workerRef.current.terminate();
-        workerRef.current = null;
-      }
+      processingRef.current?.abort();
+      processingRef.current = null;
+      disposeWorker();
+      masksRef.current = [];
     };
-  }, []);
+  }, [disposeWorker]);
 
   return {
     isModelLoading,

@@ -1,6 +1,6 @@
 "use client";
 
-import { CSSProperties, useMemo } from "react";
+import { CSSProperties, type ReactNode, useId, useMemo } from "react";
 
 import {
   Select,
@@ -11,10 +11,9 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Slider } from "@/components/ui/slider";
-import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { DebouncedColorInput } from "@/components/ui/debounced-color-input";
+import panelStyles from "@/components/editor-panels.module.css";
 
 // Helper to check if a color is effectively transparent
 function isTransparentColor(color: string): boolean {
@@ -81,8 +80,7 @@ interface SubtitleStylingProps {
   mode?: "word" | "phrase";
   onModeChange?: (mode: "word" | "phrase") => void;
   className?: string;
-  bgRemovalReady?: boolean;
-  ratio?: "16:9" | "9:16";
+  personEffects?: ReactNode;
 }
 
 export const FONT_FAMILIES = {
@@ -226,12 +224,13 @@ export const FONT_FAMILIES = {
 const fontOptions = Object.values(FONT_FAMILIES);
 
 const FONT_SIZE_STOPS = [
+  { value: 12, label: "Extra small" },
   { value: 16, label: "Small" },
   { value: 22, label: "Medium" },
   { value: 28, label: "Big" },
 ] as const;
 
-// Map slider index (0, 1, 2) to font size values
+// Map each slider stop to its subtitle size.
 function sliderIndexToFontSize(index: number): number {
   return FONT_SIZE_STOPS[index]?.value ?? 22;
 }
@@ -268,16 +267,13 @@ type SubtitlePresetName =
 interface SubtitlePreset {
   name: SubtitlePresetName;
   label: string;
-  previewText: string;
   style: Partial<SubtitleStyle>;
-  inactiveStyles?: CSSProperties;
 }
 
 const PRESETS: SubtitlePreset[] = [
   {
     name: "glass",
     label: "Glass",
-    previewText: "GLASS",
     style: {
       fontFamily: FONT_FAMILIES.outfit.value,
       fontSize: 22,
@@ -291,22 +287,10 @@ const PRESETS: SubtitlePreset[] = [
       position: "bottom",
       maxWordsPerLine: 6,
     },
-    inactiveStyles: {
-      color: "#FFFFFF",
-      backgroundColor: "rgba(255, 255, 255, 0.18)",
-      borderRadius: "0.5rem",
-      paddingInline: "0.75rem",
-      paddingBlock: "0.35rem",
-      boxShadow:
-        "inset 0 0 0 1px rgba(255,255,255,0.35), 0 6px 18px rgba(0,0,0,0.22)",
-      backdropFilter: "blur(8px)",
-      WebkitBackdropFilter: "blur(8px)",
-    },
   },
   {
     name: "formal",
     label: "Formal",
-    previewText: "FORMAL",
     style: {
       fontFamily: FONT_FAMILIES.playfairDisplay.value,
       fontSize: 22,
@@ -320,19 +304,10 @@ const PRESETS: SubtitlePreset[] = [
       position: "bottom",
       maxWordsPerLine: 3,
     },
-    inactiveStyles: {
-      color: "#FFFFFF",
-      backgroundColor: "rgba(24, 24, 27, 0.9)",
-      borderRadius: "0.5rem",
-      paddingInline: "0.75rem",
-      paddingBlock: "0.35rem",
-      boxShadow: "0 0 0 1px rgba(255,255,255,0.2)",
-    },
   },
   {
     name: "green",
     label: "Green",
-    previewText: "GREEN",
     style: {
       fontFamily: FONT_FAMILIES.bangers.value,
       fontSize: 16,
@@ -346,18 +321,10 @@ const PRESETS: SubtitlePreset[] = [
       position: "bottom",
       maxWordsPerLine: 6,
     },
-    inactiveStyles: {
-      color: "#00FF41",
-      backgroundColor: "#0B0B0B",
-      borderRadius: "0.5rem",
-      paddingInline: "0.75rem",
-      paddingBlock: "0.35rem",
-    },
   },
   {
     name: "gold",
     label: "Gold",
-    previewText: "GOLD",
     style: {
       fontFamily: FONT_FAMILIES.permanentMarker.value,
       fontSize: 16,
@@ -371,18 +338,10 @@ const PRESETS: SubtitlePreset[] = [
       position: "bottom",
       maxWordsPerLine: 6,
     },
-    inactiveStyles: {
-      color: "#F4D35E",
-      backgroundColor: "#1F1300",
-      borderRadius: "0.5rem",
-      paddingInline: "0.75rem",
-      paddingBlock: "0.35rem",
-    },
   },
   {
     name: "subtitle",
     label: "Subtitle",
-    previewText: "SUBTITLE",
     style: {
       fontFamily: FONT_FAMILIES.outfit.value,
       fontSize: 16,
@@ -396,18 +355,10 @@ const PRESETS: SubtitlePreset[] = [
       position: "bottom",
       maxWordsPerLine: 6,
     },
-    inactiveStyles: {
-      color: "#FFFFFF",
-      backgroundColor: "rgba(0, 0, 0, 0.75)",
-      borderRadius: "0.5rem",
-      paddingInline: "0.75rem",
-      paddingBlock: "0.35rem",
-    },
   },
   {
     name: "gamer",
     label: "Gamer",
-    previewText: "GAMER",
     style: {
       fontFamily: FONT_FAMILIES.bebasNeue.value,
       fontSize: 16,
@@ -421,14 +372,6 @@ const PRESETS: SubtitlePreset[] = [
       position: "bottom",
       maxWordsPerLine: 6,
     },
-    inactiveStyles: {
-      color: "#94FBAB",
-      backgroundColor: "#141414",
-      borderRadius: "0.5rem",
-      paddingInline: "0.75rem",
-      paddingBlock: "0.35rem",
-      boxShadow: "0 0 0 2px #FF00FF",
-    },
   },
 ];
 
@@ -439,91 +382,49 @@ interface PresetButtonProps {
 }
 
 function PresetButton({ preset, isActive, onApply }: PresetButtonProps) {
-  // Look up the cssFont value so the button renders with the actual Google Font
-  const presetCssFont = useMemo(() => {
-    const match = fontOptions.find((f) => f.value === preset.style.fontFamily);
-    return match?.cssFont ?? preset.style.fontFamily;
-  }, [preset.style.fontFamily]);
-
-  const fontStyles: CSSProperties = {
-    fontFamily: presetCssFont,
-    fontWeight: preset.style.fontWeight as CSSProperties["fontWeight"],
-  };
+  const presetCssFont =
+    fontOptions.find((font) => font.value === preset.style.fontFamily)
+      ?.cssFont ?? preset.style.fontFamily;
   const isGlassPreset = preset.style.backgroundStyle === "glass";
-  const glassBackdropStyles: CSSProperties = {
-    background:
-      "linear-gradient(135deg, #8a6a4a 0%, #c3b296 31%, #5b473a 32%, #302a2a 58%, #9f8f72 59%, #f2e8d4 100%)",
-    backgroundSize: "180% 180%",
-    color: preset.style.color,
-    boxShadow: isActive
-      ? "inset 0 0 0 1px rgba(255,255,255,0.35), 0 0 0 1px rgba(0,0,0,0.55)"
-      : "inset 0 0 0 1px rgba(0,0,0,0.25)",
-    ...fontStyles,
-  };
 
   return (
-    <Button
+    <button
+      type="button"
       onClick={onApply}
-      variant={isActive ? "default" : "ghost"}
-      className="group relative h-10 w-full overflow-hidden rounded-lg text-xs transition-all"
-      style={
-        isGlassPreset
-          ? glassBackdropStyles
-          : isActive
-            ? {
-                backgroundColor: isTransparentColor(
-                  preset.style.backgroundColor ?? "",
-                )
-                  ? "#111111"
-                  : (preset.style.backgroundColor ?? "var(--primary)"),
-                color: preset.style.color,
-                boxShadow:
-                  preset.style.backgroundStyle === "glass"
-                    ? "inset 0 0 0 1px rgba(255,255,255,0.45), 0 0 0 1px rgba(0,0,0,0.2)"
-                    : preset.style.borderWidth && preset.style.borderWidth > 0
-                      ? `inset 0 0 0 1px #000000, 0 0 0 ${preset.style.borderWidth}px ${preset.style.borderColor}`
-                      : "inset 0 0 0 1px #000000, 0 0 0 2px rgba(255,255,255,0.7)",
-                backdropFilter:
-                  preset.style.backgroundStyle === "glass"
-                    ? "blur(8px)"
-                    : undefined,
-                WebkitBackdropFilter:
-                  preset.style.backgroundStyle === "glass"
-                    ? "blur(8px)"
-                    : undefined,
-                ...fontStyles,
-              }
-            : { ...preset.inactiveStyles, ...fontStyles }
-      }
+      aria-pressed={isActive}
+      aria-label={`${preset.label} style preset`}
+      className={panelStyles.preset}
     >
-      {isGlassPreset ? (
-        <>
-          <span className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_22%_30%,rgba(255,255,255,0.45),transparent_24%),linear-gradient(90deg,rgba(0,0,0,0.28),transparent_45%,rgba(255,255,255,0.18))]" />
-          <span
-            className="relative z-10 rounded-md px-3 py-1 text-[11px] font-semibold uppercase"
-            style={{
-              backgroundColor: preset.style.backgroundColor,
-              boxShadow:
-                "inset 0 0 0 1px rgba(255,255,255,0.5), 0 6px 14px rgba(0,0,0,0.28)",
-              backdropFilter: "blur(8px) saturate(1.25)",
-              WebkitBackdropFilter: "blur(8px) saturate(1.25)",
-              textShadow: "0 1px 3px rgba(0,0,0,0.55)",
-            }}
-          >
-            {preset.label.toUpperCase()}
-          </span>
-        </>
-      ) : (
-        preset.label.toUpperCase()
-      )}
       <span
-        className={`pointer-events-none absolute inset-0 rounded-lg border-2 transition-colors ${
-          isActive
-            ? "border-yellow-400"
-            : "border-transparent group-hover:border-border/60"
-        }`}
-      />
-    </Button>
+        className={panelStyles.presetFace}
+        style={{
+          fontFamily: presetCssFont,
+          fontWeight: preset.style.fontWeight as CSSProperties["fontWeight"],
+          color: preset.style.color,
+          background: isGlassPreset
+            ? "linear-gradient(130deg, #85817c, #b4ada2 47%, #575751)"
+            : isTransparentColor(preset.style.backgroundColor ?? "")
+              ? "#44454a"
+              : preset.style.backgroundColor,
+          textShadow: `1px 2px 3px rgba(0,0,0,${preset.style.dropShadowIntensity ?? 0})`,
+        }}
+      >
+        <span
+          style={
+            isGlassPreset
+              ? {
+                  borderRadius: 5,
+                  padding: "3px 9px",
+                  background: preset.style.backgroundColor,
+                }
+              : undefined
+          }
+        >
+          Aa
+        </span>
+      </span>
+      <span className={panelStyles.presetLabel}>{preset.label}</span>
+    </button>
   );
 }
 
@@ -581,18 +482,15 @@ export function SubtitleStyling({
   mode = "phrase",
   onModeChange,
   className = "",
-  bgRemovalReady = false,
-  ratio = "16:9",
+  personEffects,
 }: SubtitleStylingProps) {
+  const fontId = useId();
+  const textColorId = useId();
+  const watermarkId = useId();
   const activePresetName = useMemo<SubtitlePresetName | null>(() => {
     const match = PRESETS.find((preset) => isPresetActive(style, preset));
     return match ? match.name : null;
   }, [style]);
-
-  const previewText = useMemo(() => {
-    const match = PRESETS.find((preset) => preset.name === activePresetName);
-    return match?.previewText ?? "PREVIEW";
-  }, [activePresetName]);
 
   const handleFontFamilyChange = (value: string) => {
     onChange({ ...style, fontFamily: value });
@@ -655,7 +553,6 @@ export function SubtitleStyling({
       letterSpacing: "0.05em",
       filter: `drop-shadow(2px 2px ${Math.max(2, style.dropShadowIntensity * 4)}px rgba(0, 0, 0, ${style.dropShadowIntensity}))`,
       borderRadius: "0.5rem",
-      transition: "all 0.2s ease",
     };
 
     return {
@@ -680,46 +577,57 @@ export function SubtitleStyling({
   const fontSizeSliderIndex = fontSizeToSliderIndex(style.fontSize);
 
   return (
-    <div
-      className={`flex flex-col ${className}`}
-      style={{ fontFamily: "var(--font-outfit), sans-serif" }}
-    >
+    <div className={`${panelStyles.stylePanel} ${className}`}>
+      <div className={panelStyles.panelHeader}>
+        <h2>Subtitle style</h2>
+      </div>
+      <div className={panelStyles.preview}>
+        <span className={panelStyles.previewText} style={previewStyles}>
+          The quick brown{" "}
+          <span
+            style={{
+              color:
+                wordEmphasisColorEnabled && mode === "phrase"
+                  ? wordEmphasisColor
+                  : undefined,
+              backgroundColor:
+                wordEmphasisEnabled && mode === "phrase"
+                  ? "rgba(242,210,27,0.2)"
+                  : undefined,
+              borderRadius: 4,
+            }}
+          >
+            fox
+          </span>
+        </span>
+      </div>
       {/* Mode Toggle at top */}
       {onModeChange && (
-        <div className="px-4 mb-3">
-          <Tabs
-            value={mode}
-            onValueChange={(value) => onModeChange(value as "word" | "phrase")}
-          >
-            <TabsList className="grid w-full grid-cols-2">
-              <TabsTrigger value="word">Word</TabsTrigger>
-              <TabsTrigger value="phrase">Phrases</TabsTrigger>
-            </TabsList>
-          </Tabs>
+        <div className={panelStyles.modeTabs}>
+          <div role="group" aria-label="Subtitle display mode">
+            <button
+              type="button"
+              aria-pressed={mode === "word"}
+              onClick={() => onModeChange("word")}
+            >
+              Word
+            </button>
+            <button
+              type="button"
+              aria-pressed={mode === "phrase"}
+              onClick={() => onModeChange("phrase")}
+            >
+              Line
+            </button>
+          </div>
         </div>
       )}
 
-      <div className="px-4 mb-2">
-        <h3 className="font-semibold text-base tracking-tight">
-          Subtitle Styling
-        </h3>
-      </div>
-
-      {/* Preview — pinned above scroll area */}
-      <div className="px-4 pb-3">
-        <div
-          className="p-3 rounded-lg text-center border border-border/40 bg-muted/30"
-          style={previewStyles}
-        >
-          {previewText}
-        </div>
-      </div>
-
-      <div className="p-2 space-y-3">
+      <div className={panelStyles.controls}>
         {/* Style presets */}
         <div className="space-y-2 mb-2">
-          <label className="text-sm font-medium block">Style Presets</label>
-          <div className="grid grid-cols-2 gap-2">
+          <label className="text-sm font-medium block">Style presets</label>
+          <div className={panelStyles.presetGrid}>
             {PRESETS.map((preset) => (
               <PresetButton
                 key={preset.name}
@@ -731,13 +639,19 @@ export function SubtitleStyling({
           </div>
         </div>
 
+        {personEffects}
+
         {/* Font Family with preview */}
-        <div className="space-y-2 rounded-lg border border-border/40 bg-muted/40 p-3">
+        <div className="space-y-2">
+          <label className="text-sm font-medium block" htmlFor={fontId}>
+            Font
+          </label>
           <Select
             value={style.fontFamily}
             onValueChange={handleFontFamilyChange}
           >
             <SelectTrigger
+              id={fontId}
               className="w-full rounded-md border-none bg-background px-3 py-2 text-sm shadow-sm"
               style={{ fontFamily: currentFontCss }}
             >
@@ -763,14 +677,20 @@ export function SubtitleStyling({
         {/* Font Size - only when dynamic is off (dynamic has its own size controls) */}
         {!style.dynamicEnabled && (
           <div className="space-y-2">
-            <label className="text-sm font-medium block">Font Size</label>
+            <div className="flex items-center justify-between">
+              <label className="text-sm font-medium block">Font size</label>
+              <span className="text-xs text-muted-foreground tabular-nums">
+                {style.fontSize}px
+              </span>
+            </div>
             <Slider
+              aria-label="Subtitle font size"
               value={[fontSizeSliderIndex]}
               onValueChange={([v]) =>
                 onChange({ ...style, fontSize: sliderIndexToFontSize(v) })
               }
               min={0}
-              max={2}
+              max={FONT_SIZE_STOPS.length - 1}
               step={1}
               className="w-full"
             />
@@ -792,24 +712,38 @@ export function SubtitleStyling({
         )}
 
         <div className="space-y-2">
-          <label className="text-sm font-medium block">Font Weight</label>
-          <Select
-            value={style.fontWeight}
-            onValueChange={handleFontWeightChange}
+          <label className="text-sm font-medium block">Font weight</label>
+          <div
+            className={panelStyles.weightOptions}
+            role="group"
+            aria-label="Font weight"
           >
-            <SelectTrigger className="w-full p-2 border rounded-md bg-background">
-              <SelectValue placeholder="Select a weight" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectGroup>
-                {fontWeightOptions.map((option) => (
-                  <SelectItem key={option.value} value={option.value}>
-                    {option.label}
-                  </SelectItem>
-                ))}
-              </SelectGroup>
-            </SelectContent>
-          </Select>
+            {fontWeightOptions.map((option) => (
+              <button
+                key={option.value}
+                type="button"
+                aria-pressed={style.fontWeight === option.value}
+                onClick={() => handleFontWeightChange(option.value)}
+                style={{ fontWeight: Number(option.value) }}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="space-y-2">
+          <label className="text-sm font-medium block" htmlFor={textColorId}>
+            Text color
+          </label>
+          <div className={panelStyles.colorField}>
+            <span className="text-xs uppercase">{style.color}</span>
+            <DebouncedColorInput
+              id={textColorId}
+              value={style.color}
+              onChange={handleColorChange}
+            />
+          </div>
         </div>
 
         {/* Dynamic controls: behind text size + position, front text, follow-word */}
@@ -823,6 +757,7 @@ export function SubtitleStyling({
                 </span>
               </div>
               <Slider
+                aria-label="Behind text size"
                 value={[style.dynamicFontSize]}
                 onValueChange={([v]) =>
                   onChange({ ...style, dynamicFontSize: v })
@@ -846,6 +781,7 @@ export function SubtitleStyling({
                 </span>
               </div>
               <Slider
+                aria-label="Behind text vertical position"
                 value={[style.dynamicYPosition]}
                 onValueChange={([v]) =>
                   onChange({ ...style, dynamicYPosition: v })
@@ -862,7 +798,7 @@ export function SubtitleStyling({
             </div>
 
             <div className="space-y-2 rounded-lg border border-border/40 bg-muted/40 p-3">
-              <h4 className="text-sm font-medium">Front Text</h4>
+              <h3 className="text-sm font-medium">Front Text</h3>
               <p className="text-xs text-muted-foreground">
                 Smaller text rendered in front of the person
               </p>
@@ -875,6 +811,7 @@ export function SubtitleStyling({
                   </span>
                 </div>
                 <Slider
+                  aria-label="Front text size"
                   value={[style.dynamicFrontFontSize]}
                   onValueChange={([v]) =>
                     onChange({ ...style, dynamicFrontFontSize: v })
@@ -900,6 +837,7 @@ export function SubtitleStyling({
                   </span>
                 </div>
                 <Slider
+                  aria-label="Front text vertical position"
                   value={[style.dynamicFrontYPosition]}
                   onValueChange={([v]) =>
                     onChange({ ...style, dynamicFrontYPosition: v })
@@ -928,10 +866,12 @@ export function SubtitleStyling({
                 return (
                   <button
                     key={pos}
+                    type="button"
+                    aria-pressed={isActive}
                     onClick={() => onChange({ ...style, position: pos })}
                     className={`flex flex-col items-center gap-1 rounded-lg border px-2 py-2 text-xs font-medium transition-all ${
                       isActive
-                        ? "border-amber-500/70 bg-amber-50 text-amber-700"
+                        ? "border-yellow-400 bg-yellow-50 text-foreground"
                         : "border-border/50 bg-background text-muted-foreground hover:border-border hover:text-foreground"
                     }`}
                   >
@@ -948,7 +888,7 @@ export function SubtitleStyling({
         {!style.dynamicEnabled && (
           <div className="space-y-2">
             <div className="flex items-center justify-between">
-              <label className="text-sm font-medium">Vertical Offset</label>
+              <label className="text-sm font-medium">Vertical offset</label>
               <span className="text-sm text-muted-foreground tabular-nums">
                 {(style.verticalOffset ?? 0) > 0
                   ? `+${style.verticalOffset}`
@@ -957,6 +897,7 @@ export function SubtitleStyling({
               </span>
             </div>
             <Slider
+              aria-label="Subtitle vertical offset"
               value={[style.verticalOffset ?? 0]}
               onValueChange={([v]) => onChange({ ...style, verticalOffset: v })}
               min={-50}
@@ -965,359 +906,250 @@ export function SubtitleStyling({
             />
           </div>
         )}
+      </div>
 
-        {/* Split Subtitle - always available, face tracking starts when enabled */}
-        <div className="space-y-2 rounded-lg border border-border/40 bg-muted/40 p-3">
-          <h4 className="text-sm font-medium">Split Subtitle</h4>
-          <p className="text-xs text-muted-foreground">
-            Split the phrase around the person&apos;s head
-          </p>
-          <div className="grid grid-cols-3 gap-2">
-            {(
-              [
-                { value: "none" as const, label: "Off" },
-                { value: "above-below" as const, label: "Top / Bottom" },
-                { value: "left-right" as const, label: "Left / Right" },
-              ] as const
-            ).map(({ value, label }) => {
-              const disabled = value === "left-right" && ratio === "9:16";
-              const isActive = (style.splitSubtitleMode ?? "none") === value;
-              return (
-                <button
-                  key={value}
-                  disabled={disabled}
-                  onClick={() =>
-                    !disabled &&
-                    onChange({ ...style, splitSubtitleMode: value })
-                  }
-                  className={`rounded-lg border px-2 py-2 text-xs font-medium transition-all ${
-                    isActive
-                      ? "border-amber-500/70 bg-amber-50 text-amber-700"
-                      : disabled
-                        ? "border-border/30 bg-background/50 text-muted-foreground/40 cursor-not-allowed opacity-50"
-                        : "border-border/50 bg-background text-muted-foreground hover:border-border hover:text-foreground"
-                  }`}
-                >
-                  {label}
-                </button>
-              );
-            })}
-          </div>
-        </div>
-
-        {/* Max Words Per Line slider - phrase mode only */}
-        {mode === "phrase" && (
-          <div className="space-y-2">
-            <div className="flex items-center justify-between">
-              <label className="text-sm font-medium">Max Words/Line</label>
-              <span className="text-sm text-muted-foreground tabular-nums">
-                {style.maxWordsPerLine}
-              </span>
+      <section
+        className={panelStyles.advanced}
+        aria-labelledby="advanced-subtitle-options"
+      >
+        <h3 id="advanced-subtitle-options">Advanced options</h3>
+        <div className={panelStyles.advancedContent}>
+          {/* Max Words Per Line slider - phrase mode only */}
+          {mode === "phrase" && (
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <label className="text-sm font-medium">Max Words/Line</label>
+                <span className="text-sm text-muted-foreground tabular-nums">
+                  {style.maxWordsPerLine}
+                </span>
+              </div>
+              <Slider
+                aria-label="Maximum words per line"
+                value={[style.maxWordsPerLine]}
+                onValueChange={([v]) =>
+                  onChange({ ...style, maxWordsPerLine: v })
+                }
+                min={1}
+                max={8}
+                step={1}
+                className="w-full"
+              />
+              <div className="flex justify-between text-xs text-muted-foreground mt-1">
+                <span>1</span>
+                <span>8</span>
+              </div>
             </div>
+          )}
+
+          {/* Background color - hidden when dynamic is active */}
+          {!style.dynamicEnabled && (
+            <div className="space-y-2">
+              <label className="text-sm font-medium block">
+                Background Color
+              </label>
+              <div className="flex items-center justify-between">
+                <span className="text-sm">No background</span>
+                <Switch
+                  aria-label="No subtitle background"
+                  checked={isTransparentColor(style.backgroundColor)}
+                  onCheckedChange={(checked) => {
+                    if (checked) {
+                      onChange({
+                        ...style,
+                        backgroundColor: "transparent",
+                        backgroundStyle: "solid",
+                      });
+                    } else {
+                      onChange({
+                        ...style,
+                        backgroundColor: "#000000",
+                        backgroundStyle: "solid",
+                      });
+                    }
+                  }}
+                />
+              </div>
+              {!isTransparentColor(style.backgroundColor) && (
+                <div className="flex items-center gap-2">
+                  <DebouncedColorInput
+                    aria-label="Subtitle background color"
+                    value={rgbaToHex(style.backgroundColor)}
+                    onChange={handleBackgroundColorChange}
+                    className="w-10 h-10 rounded cursor-pointer"
+                  />
+                  <span className="text-sm uppercase">
+                    {rgbaToHex(style.backgroundColor)}
+                  </span>
+                </div>
+              )}
+            </div>
+          )}
+
+          <div className="space-y-2">
+            <label className="text-sm font-medium block">
+              Border Width ({style.borderWidth}px)
+            </label>
             <Slider
-              value={[style.maxWordsPerLine]}
-              onValueChange={([v]) =>
-                onChange({ ...style, maxWordsPerLine: v })
-              }
-              min={1}
-              max={8}
+              aria-label="Subtitle border width"
+              value={[style.borderWidth]}
+              onValueChange={([v]) => onChange({ ...style, borderWidth: v })}
+              min={0}
+              max={20}
+              step={1}
+            />
+          </div>
+
+          {style.borderWidth > 0 && (
+            <div className="space-y-2">
+              <label className="text-sm font-medium block">Border Color</label>
+              <div className="flex items-center gap-2">
+                <DebouncedColorInput
+                  aria-label="Subtitle border color"
+                  value={style.borderColor}
+                  onChange={handleBorderColorChange}
+                  className="w-10 h-10 rounded cursor-pointer"
+                />
+                <span className="text-sm uppercase">{style.borderColor}</span>
+              </div>
+            </div>
+          )}
+
+          <div className="space-y-2">
+            <label className="text-sm font-medium block">
+              Drop Shadow Intensity
+            </label>
+            <Slider
+              aria-label="Subtitle shadow intensity"
+              value={[Math.round(style.dropShadowIntensity * 100)]}
+              onValueChange={([v]) => handleDropShadowIntensityChange(v / 100)}
+              min={0}
+              max={100}
               step={1}
               className="w-full"
             />
             <div className="flex justify-between text-xs text-muted-foreground mt-1">
-              <span>1</span>
-              <span>8</span>
+              <span>Subtle</span>
+              <span>Strong</span>
             </div>
           </div>
-        )}
 
-        <div className="space-y-2">
-          <label className="text-sm font-medium block">Text Color</label>
-          <div className="flex items-center gap-2">
-            <DebouncedColorInput
-              value={style.color}
-              onChange={handleColorChange}
-              className="w-10 h-10 rounded cursor-pointer"
-            />
-            <span className="text-sm uppercase">{style.color}</span>
-          </div>
-        </div>
-
-        {/* Background color - hidden when dynamic is active */}
-        {!style.dynamicEnabled && (
-          <div className="space-y-2">
-            <label className="text-sm font-medium block">
-              Background Color
-            </label>
-            <div className="flex items-center justify-between">
-              <span className="text-sm">No background</span>
-              <Switch
-                checked={isTransparentColor(style.backgroundColor)}
-                onCheckedChange={(checked) => {
-                  if (checked) {
-                    onChange({
-                      ...style,
-                      backgroundColor: "transparent",
-                      backgroundStyle: "solid",
-                    });
-                  } else {
-                    onChange({
-                      ...style,
-                      backgroundColor: "#000000",
-                      backgroundStyle: "solid",
-                    });
-                  }
-                }}
-              />
-            </div>
-            {!isTransparentColor(style.backgroundColor) && (
-              <div className="flex items-center gap-2">
-                <DebouncedColorInput
-                  value={rgbaToHex(style.backgroundColor)}
-                  onChange={handleBackgroundColorChange}
-                  className="w-10 h-10 rounded cursor-pointer"
-                />
-                <span className="text-sm uppercase">
-                  {rgbaToHex(style.backgroundColor)}
-                </span>
-              </div>
-            )}
-          </div>
-        )}
-
-        <div className="space-y-2">
-          <label className="text-sm font-medium block">
-            Border Width ({style.borderWidth}px)
-          </label>
-          <Slider
-            value={[style.borderWidth]}
-            onValueChange={([v]) => onChange({ ...style, borderWidth: v })}
-            min={0}
-            max={20}
-            step={1}
-          />
-        </div>
-
-        {style.borderWidth > 0 && (
-          <div className="space-y-2">
-            <label className="text-sm font-medium block">Border Color</label>
-            <div className="flex items-center gap-2">
-              <DebouncedColorInput
-                value={style.borderColor}
-                onChange={handleBorderColorChange}
-                className="w-10 h-10 rounded cursor-pointer"
-              />
-              <span className="text-sm uppercase">{style.borderColor}</span>
-            </div>
-          </div>
-        )}
-
-        <div className="space-y-2">
-          <label className="text-sm font-medium block">
-            Drop Shadow Intensity
-          </label>
-          <Slider
-            value={[Math.round(style.dropShadowIntensity * 100)]}
-            onValueChange={([v]) => handleDropShadowIntensityChange(v / 100)}
-            min={0}
-            max={100}
-            step={1}
-            className="w-full"
-          />
-          <div className="flex justify-between text-xs text-muted-foreground mt-1">
-            <span>Subtle</span>
-            <span>Strong</span>
-          </div>
-        </div>
-
-        {/* Word emphasis - hidden when dynamic is active */}
-        {!style.dynamicEnabled && (
-          <div className="space-y-3 rounded-lg border border-border/40 bg-muted/40 p-3">
-            <div className="flex items-center justify-between rounded-lg border border-border/50 px-3 py-2">
-              <div>
-                <p className="text-sm font-medium">
-                  Active word emphasis resize
-                </p>
-                <p className="text-xs text-muted-foreground">
-                  {mode === "word"
-                    ? "Only available in phrase mode"
-                    : "Scale the spoken word and keep the subtle emphasis backdrop."}
-                </p>
-              </div>
-              <Switch
-                checked={wordEmphasisEnabled}
-                onCheckedChange={handleWordEmphasisToggle}
-                disabled={mode === "word"}
-                aria-label="Toggle active word emphasis resize"
-              />
-            </div>
-
-            <div className="flex items-center justify-between rounded-lg border border-border/50 px-3 py-2">
-              <div>
-                <p className="text-sm font-medium">
-                  Active word emphasis recolor
-                </p>
-                <p className="text-xs text-muted-foreground">
-                  {mode === "word"
-                    ? "Only available in phrase mode"
-                    : "Recolor the spoken word with a custom color."}
-                </p>
-              </div>
-              <Switch
-                checked={wordEmphasisColorEnabled}
-                onCheckedChange={handleWordEmphasisColorToggle}
-                disabled={mode === "word"}
-                aria-label="Toggle active word emphasis recolor"
-              />
-            </div>
-
-            {wordEmphasisColorEnabled && (
-              <div className="space-y-2">
-                <label className="text-sm font-medium block">
-                  Active Word Color
-                </label>
-                <div className="flex items-center gap-2">
-                  <DebouncedColorInput
-                    value={wordEmphasisColor}
-                    onChange={handleWordEmphasisColorChange}
-                    className="w-10 h-10 rounded cursor-pointer"
-                  />
-                  <input
-                    type="text"
-                    value={wordEmphasisColor}
-                    onChange={(event) =>
-                      handleWordEmphasisColorChange(event.target.value)
-                    }
-                    className="flex-1 rounded-md border border-border px-3 py-2 text-sm bg-background"
-                    placeholder="#F2D21B"
-                  />
+          {/* Word emphasis - hidden when dynamic is active */}
+          {!style.dynamicEnabled && (
+            <div className="space-y-3 rounded-lg border border-border/40 bg-muted/40 p-3">
+              <div className="flex items-center justify-between rounded-lg border border-border/50 px-3 py-2">
+                <div>
+                  <p className="text-sm font-medium">
+                    Active word emphasis resize
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    {mode === "word"
+                      ? "Only available in phrase mode"
+                      : "Scale the spoken word and keep the subtle emphasis backdrop."}
+                  </p>
                 </div>
+                <Switch
+                  checked={wordEmphasisEnabled}
+                  onCheckedChange={handleWordEmphasisToggle}
+                  disabled={mode === "word"}
+                  aria-label="Toggle active word emphasis resize"
+                />
               </div>
-            )}
 
-            <div className="flex items-center justify-between rounded-lg border border-border/50 px-3 py-2">
-              <div>
-                <p className="text-sm font-medium">Wind</p>
-                <p className="text-xs text-muted-foreground">
-                  {mode === "word"
-                    ? "Only available in phrase mode"
-                    : "Words drift in as they are spoken."}
-                </p>
+              <div className="flex items-center justify-between rounded-lg border border-border/50 px-3 py-2">
+                <div>
+                  <p className="text-sm font-medium">
+                    Active word emphasis recolor
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    {mode === "word"
+                      ? "Only available in phrase mode"
+                      : "Recolor the spoken word with a custom color."}
+                  </p>
+                </div>
+                <Switch
+                  checked={wordEmphasisColorEnabled}
+                  onCheckedChange={handleWordEmphasisColorToggle}
+                  disabled={mode === "word"}
+                  aria-label="Toggle active word emphasis recolor"
+                />
               </div>
-              <Switch
-                checked={windEnabled}
-                onCheckedChange={(checked) =>
-                  onChange({ ...style, windEnabled: checked })
-                }
-                disabled={mode === "word"}
-                aria-label="Toggle wind word reveal"
-              />
-            </div>
-          </div>
-        )}
 
-        {/* Display on Spoken - hidden when dynamic is active */}
-        {!style.dynamicEnabled && (
-          <div className="flex items-center justify-between rounded-lg border border-border/50 px-3 py-2">
-            <div>
-              <p className="text-sm font-medium">Display on Spoken</p>
-              <p className="text-xs text-muted-foreground">
-                {mode === "word"
-                  ? "Only available in phrase mode"
-                  : "Reveal words one by one as they are spoken."}
-              </p>
-            </div>
-            <Switch
-              checked={style.dynamicFollowWord}
-              onCheckedChange={(checked) =>
-                onChange({ ...style, dynamicFollowWord: checked })
-              }
-              disabled={mode === "word"}
-              aria-label="Toggle display on spoken"
-            />
-          </div>
-        )}
-
-        {/* Background Removal Section - only when masks are ready */}
-        {bgRemovalReady && (
-          <div className="space-y-3 rounded-lg border border-border/40 bg-muted/40 p-3">
-            <h4 className="text-sm font-medium">Background</h4>
-
-            {/* Dynamic (3D depth) toggle */}
-            <div className="flex items-center justify-between rounded-lg border border-amber-300/50 bg-amber-50/50 px-3 py-2">
-              <div>
-                <p className="text-sm font-medium">Dynamic (3D depth)</p>
-                <p className="text-xs text-muted-foreground">
-                  Split text behind &amp; in front of the person
-                </p>
-              </div>
-              <Switch
-                checked={style.dynamicEnabled}
-                onCheckedChange={(checked) =>
-                  onChange({ ...style, dynamicEnabled: checked })
-                }
-                aria-label="Toggle dynamic 3D depth subtitles"
-              />
-            </div>
-
-            {!style.dynamicEnabled && (
-              <>
+              {wordEmphasisColorEnabled && (
                 <div className="space-y-2">
                   <label className="text-sm font-medium block">
-                    Background Type
+                    Active Word Color
                   </label>
-                  <div className="grid grid-cols-2 gap-2">
-                    {(["solid", "blur"] as const).map((bgType) => {
-                      const isActive = style.backgroundType === bgType;
-                      return (
-                        <button
-                          key={bgType}
-                          onClick={() =>
-                            onChange({ ...style, backgroundType: bgType })
-                          }
-                          className={`rounded-lg border px-3 py-2 text-xs font-medium transition-all ${
-                            isActive
-                              ? "border-amber-500/70 bg-amber-50 text-amber-700"
-                              : "border-border/50 bg-background text-muted-foreground hover:border-border hover:text-foreground"
-                          }`}
-                        >
-                          {bgType === "solid" ? "Solid Color" : "Blurred"}
-                        </button>
-                      );
-                    })}
+                  <div className="flex items-center gap-2">
+                    <DebouncedColorInput
+                      aria-label="Active word color"
+                      value={wordEmphasisColor}
+                      onChange={handleWordEmphasisColorChange}
+                      className="w-10 h-10 rounded cursor-pointer"
+                    />
+                    <input
+                      type="text"
+                      aria-label="Active word color value"
+                      value={wordEmphasisColor}
+                      onChange={(event) =>
+                        handleWordEmphasisColorChange(event.target.value)
+                      }
+                      className="flex-1 rounded-md border border-border px-3 py-2 text-sm bg-background"
+                      placeholder="#F2D21B"
+                    />
                   </div>
                 </div>
+              )}
 
-                {style.backgroundType === "solid" && (
-                  <div className="space-y-2">
-                    <label className="text-sm font-medium block">
-                      Background Color
-                    </label>
-                    <div className="flex items-center gap-2">
-                      <DebouncedColorInput
-                        value={style.solidBackgroundColor}
-                        onChange={(color) =>
-                          onChange({ ...style, solidBackgroundColor: color })
-                        }
-                        className="w-10 h-10 rounded cursor-pointer"
-                      />
-                      <span className="text-sm uppercase">
-                        {style.solidBackgroundColor}
-                      </span>
-                    </div>
-                  </div>
-                )}
-              </>
-            )}
-          </div>
-        )}
-      </div>
+              <div className="flex items-center justify-between rounded-lg border border-border/50 px-3 py-2">
+                <div>
+                  <p className="text-sm font-medium">Wind</p>
+                  <p className="text-xs text-muted-foreground">
+                    {mode === "word"
+                      ? "Only available in phrase mode"
+                      : "Words drift in as they are spoken."}
+                  </p>
+                </div>
+                <Switch
+                  checked={windEnabled}
+                  onCheckedChange={(checked) =>
+                    onChange({ ...style, windEnabled: checked })
+                  }
+                  disabled={mode === "word"}
+                  aria-label="Toggle wind word reveal"
+                />
+              </div>
+            </div>
+          )}
+
+          {/* Display on Spoken - hidden when dynamic is active */}
+          {!style.dynamicEnabled && (
+            <div className="flex items-center justify-between rounded-lg border border-border/50 px-3 py-2">
+              <div>
+                <p className="text-sm font-medium">Display on Spoken</p>
+                <p className="text-xs text-muted-foreground">
+                  {mode === "word"
+                    ? "Only available in phrase mode"
+                    : "Reveal words one by one as they are spoken."}
+                </p>
+              </div>
+              <Switch
+                checked={style.dynamicFollowWord}
+                onCheckedChange={(checked) =>
+                  onChange({ ...style, dynamicFollowWord: checked })
+                }
+                disabled={mode === "word"}
+                aria-label="Toggle display on spoken"
+              />
+            </div>
+          )}
+        </div>
+      </section>
 
       {/* Branding watermark toggle */}
-      <div className="relative overflow-hidden border-2 border-amber-400 bg-amber-50 rounded-lg p-2.5">
+      <div className={panelStyles.branding}>
         <div className="flex items-start gap-2.5">
           <Switch
-            id="branding-watermark"
+            id={watermarkId}
             checked={style.brandingWatermark !== false}
             onCheckedChange={(checked) =>
               onChange({ ...style, brandingWatermark: checked })
@@ -1326,10 +1158,10 @@ export function SubtitleStyling({
           />
           <div className="space-y-1 min-w-0">
             <label
-              htmlFor="branding-watermark"
-              className="text-xs font-bold uppercase tracking-wider leading-tight block cursor-pointer"
+              htmlFor={watermarkId}
+              className="text-xs font-semibold leading-tight block cursor-pointer"
             >
-              basedsubs.getbasedapps.com
+              Support basedsubtitles
             </label>
             <p className="text-[11px] text-black/60 leading-snug">
               Support my work by keeping the watermark on your exports

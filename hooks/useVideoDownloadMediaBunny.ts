@@ -24,6 +24,7 @@ import {
   QUALITY_VERY_HIGH,
 } from "mediabunny";
 import type { StreamTargetChunk } from "mediabunny";
+import { seekVideo } from "@/lib/media-lifecycle";
 import { SubtitleStyle } from "@/components/subtitle-styling";
 import { processTranscriptChunks } from "@/lib/transcript-utils";
 import { estimateFaceFromMask, type FaceBounds } from "@/lib/render-subtitle";
@@ -43,7 +44,7 @@ import {
 } from "@/lib/export-renderer";
 import {
   adjustTranscriptChunksForSilenceRemoval,
-  createSilenceRemovalPlan,
+  createVideoCutPlan,
   isSourceTimeRemoved,
   outputTimeToSourceTime,
   sourceTimeToOutputTime,
@@ -57,6 +58,7 @@ import {
 
 interface UseVideoDownloadMediaBunnyProps {
   videoRef: RefObject<HTMLVideoElement | null>;
+  videoDuration?: number;
   transcriptChunks: TranscriptChunk[];
   subtitleStyle: SubtitleStyle;
   mode: "word" | "phrase";
@@ -75,9 +77,12 @@ interface UseVideoDownloadMediaBunnyProps {
   buildExportTimeline?: (
     videoElement: HTMLVideoElement,
     onProgress?: (percent: number) => void,
+    signal?: AbortSignal,
+    knownDuration?: number,
   ) => Promise<PositionTimeline>;
   silenceRemovalRanges?: TimeRange[];
   autoZoomEnabled?: boolean;
+  cropTrackingEnabled?: boolean;
 }
 
 interface ExportDiagnostics {
@@ -131,6 +136,7 @@ function findChunkAtTime(
 
 export function useVideoDownloadMediaBunny({
   videoRef,
+  videoDuration,
   transcriptChunks,
   subtitleStyle,
   mode,
@@ -144,6 +150,7 @@ export function useVideoDownloadMediaBunny({
   buildExportTimeline,
   silenceRemovalRanges = [],
   autoZoomEnabled = false,
+  cropTrackingEnabled = false,
 }: UseVideoDownloadMediaBunnyProps) {
   const [isProcessing, setIsProcessing] = useState(false);
   const [progress, setProgress] = useState(0);
@@ -156,13 +163,24 @@ export function useVideoDownloadMediaBunny({
     videoSource: CanvasSource | null;
   }>({ cancelRequested: false, output: null, videoSource: null });
   const progressTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const exportControllerRef = useRef<AbortController | null>(null);
+  const mountedRef = useRef(true);
 
   const downloadVideo = useCallback(async () => {
+    if (exportControllerRef.current) return;
     const video = videoRef.current;
     if (!video?.src || transcriptChunks.length === 0) {
       console.error("Missing video or transcript data");
       return;
     }
+    const controller = new AbortController();
+    exportControllerRef.current = controller;
+    const { signal } = controller;
+    const savedVideoTime = video.currentTime;
+    const savedVideoSrc = video.src;
+    const wasPlaying = !video.paused;
+    video.pause();
+    if (progressTimeoutRef.current) clearTimeout(progressTimeoutRef.current);
 
     setIsProcessing(true);
     setProgress(0);
@@ -191,6 +209,9 @@ export function useVideoDownloadMediaBunny({
     let sequentialSampleIterator: AsyncIterator<VideoSample> | null = null;
     let activeSequentialSample: VideoSample | null = null;
     let queuedSequentialSample: VideoSample | null = null;
+    let audioSource: AudioSampleSource | null = null;
+    let audioPumpPromise: Promise<void> | null = null;
+    let outputFinalized = false;
 
     try {
       // Create canvas matching video dimensions, capped on mobile to prevent
@@ -256,17 +277,24 @@ export function useVideoDownloadMediaBunny({
 
       // Build face tracking timeline for dynamic crop or left-right split during export
       const needsFaceTimeline =
-        needsCrop ||
+        (needsCrop && cropTrackingEnabled) ||
         autoZoomEnabled ||
         (subtitleStyle.splitSubtitleMode === "left-right" && !needsCrop);
       let faceTimeline: PositionTimeline | null = null;
       if (needsFaceTimeline && buildExportTimeline) {
         setStatus("Analyzing face positions...");
-        faceTimeline = await buildExportTimeline(video, (percent) => {
-          setProgress(percent);
-          setStatus(`Analyzing face positions... ${Math.round(percent)}%`);
-        });
+        faceTimeline = await buildExportTimeline(
+          video,
+          (percent) => {
+            if (signal.aborted) return;
+            setProgress(percent);
+            setStatus(`Analyzing face positions... ${Math.round(percent)}%`);
+          },
+          signal,
+          videoDuration,
+        );
       }
+      signal.throwIfAborted();
 
       // For crop mode, sample.draw() doesn't support source crop, so decode
       // to a full-resolution canvas first, then blit the cropped region.
@@ -285,7 +313,10 @@ export function useVideoDownloadMediaBunny({
 
       // Setup MediaBunny input
       setStatus("Reading original video...");
-      const videoBlob = await fetch(video.src).then((r) => r.blob());
+      const videoBlob = await fetch(video.src, { signal }).then((r) =>
+        r.blob(),
+      );
+      signal.throwIfAborted();
       using input = new Input({
         source: new BlobSource(videoBlob),
         formats: ALL_FORMATS,
@@ -293,15 +324,16 @@ export function useVideoDownloadMediaBunny({
 
       // Get video metadata
       const duration = await input.computeDuration();
-      const silenceRemovalPlan =
-        silenceRemovalRanges.length > 0
-          ? createSilenceRemovalPlan(duration, silenceRemovalRanges)
-          : null;
-      const outputDuration =
-        silenceRemovalPlan?.outputDuration &&
-        silenceRemovalPlan.outputDuration > 0
-          ? silenceRemovalPlan.outputDuration
-          : duration;
+      const silenceRemovalPlan = createVideoCutPlan(
+        duration,
+        silenceRemovalRanges,
+        transcriptChunks,
+      );
+      const outputDuration = silenceRemovalPlan?.outputDuration ?? duration;
+      if (outputDuration <= 0)
+        throw new Error(
+          "All video sections are removed. Restore a section before export.",
+        );
       const sourceTimeForOutput = (outputTime: number) =>
         silenceRemovalPlan
           ? outputTimeToSourceTime(outputTime, silenceRemovalPlan)
@@ -333,6 +365,7 @@ export function useVideoDownloadMediaBunny({
         ? await originalVideoTrack.canDecode()
         : false;
       const sourceIsHevc = /^(hvc1|hev1|hevc)/i.test(sourceCodec ?? "");
+      signal.throwIfAborted();
 
       // Accumulate encoded data via StreamTarget — avoids holding one giant
       // contiguous buffer (BufferTarget) which can OOM on long videos.
@@ -405,6 +438,7 @@ export function useVideoDownloadMediaBunny({
               fullCodecString: isMobile ? "avc1.42001f" : undefined,
               latencyMode: "realtime",
               onEncoderConfig: (config) => {
+                if (signal.aborted || !mountedRef.current) return;
                 setExportDiagnostics((previous) => ({
                   ...(previous ?? baseExportDiagnostics),
                   bitrateMode: "constant",
@@ -448,8 +482,6 @@ export function useVideoDownloadMediaBunny({
         await output.start();
         outputStarted = true;
       };
-      let audioSource: AudioSampleSource | null = null;
-      let audioPumpPromise: Promise<void> | null = null;
       let audioPumpError: Error | null = null;
 
       // Handle audio if present
@@ -464,6 +496,7 @@ export function useVideoDownloadMediaBunny({
         output.addAudioTrack(audioSource);
       }
       await ensureOutputStarted();
+      signal.throwIfAborted();
 
       console.info("[MediaBunny export] Output started", {
         exportFps,
@@ -483,6 +516,7 @@ export function useVideoDownloadMediaBunny({
       void output
         .getMimeType()
         .then((outputMimeType) => {
+          if (signal.aborted || !mountedRef.current) return;
           console.info("[MediaBunny export] MIME resolved", {
             mimeType: outputMimeType,
           });
@@ -549,6 +583,7 @@ export function useVideoDownloadMediaBunny({
       setStatus("Rendering video frames...");
 
       if (originalAudioTrack && audioSource) {
+        const exportAudioSource = audioSource;
         const audioSampleSink = new AudioSampleSink(originalAudioTrack);
         audioPumpPromise = (async () => {
           try {
@@ -576,19 +611,19 @@ export function useVideoDownloadMediaBunny({
                     ),
                   );
                 }
-                await audioSource.add(audioSample);
+                await exportAudioSource.add(audioSample);
               } finally {
                 audioSample.close();
               }
             }
-            audioSource.close();
+            exportAudioSource.close();
           } catch (error) {
             audioPumpError =
               error instanceof Error
                 ? error
                 : new Error("Failed to process audio samples");
             try {
-              audioSource.close();
+              exportAudioSource.close();
             } catch {}
           }
         })();
@@ -623,18 +658,7 @@ export function useVideoDownloadMediaBunny({
         outputTime: number,
         autoZoomFaceX: number,
       ) => {
-        video.currentTime = time;
-        await new Promise<void>((resolve) => {
-          const onSeeked = () => {
-            video.removeEventListener("seeked", onSeeked);
-            resolve();
-          };
-          video.addEventListener("seeked", onSeeked);
-          if (Math.abs(video.currentTime - time) < 0.01) {
-            video.removeEventListener("seeked", onSeeked);
-            resolve();
-          }
-        });
+        await seekVideo(video, time, signal);
         if (autoZoomEnabled) {
           drawImageWithAutoZoom(
             ctx,
@@ -741,8 +765,8 @@ export function useVideoDownloadMediaBunny({
         const sourceFaceX = faceTimeline
           ? interpolateCenterX(faceTimeline, sourceTime + FACE_TRACK_LOOKAHEAD)
           : 0.5;
-        const frameCropX = faceTimeline
-          ? computeCropX(sourceFaceX, srcW, cropW)
+        const frameCropX = needsCrop
+          ? computeCropX(sourceFaceX, srcW, cropW, cropTrackingEnabled)
           : cropX;
         const autoZoomFaceX =
           needsCrop && cropW > 0
@@ -813,14 +837,17 @@ export function useVideoDownloadMediaBunny({
             iteratorResult = await sampleIterator.next();
             const sample = iteratorResult.value ?? null;
             if (sample) {
-              drawSampleToCanvas(
-                sample,
-                frameCropX,
-                time,
-                currentAutoZoomFaceX,
-              );
-              drewSourceFrame = true;
-              sample.close();
+              try {
+                drawSampleToCanvas(
+                  sample,
+                  frameCropX,
+                  time,
+                  currentAutoZoomFaceX,
+                );
+                drewSourceFrame = true;
+              } finally {
+                sample.close();
+              }
             }
           } catch {}
           if (!drewSourceFrame) {
@@ -1154,6 +1181,8 @@ export function useVideoDownloadMediaBunny({
           throw audioPumpError;
         }
         await output.finalize();
+        signal.throwIfAborted();
+        outputFinalized = true;
 
         // Build download blob from StreamTarget buffer
         if (outputSize === 0) {
@@ -1180,11 +1209,30 @@ export function useVideoDownloadMediaBunny({
         setProgress(100);
       }
     } catch (error) {
-      console.error("MediaBunny video processing failed:", error);
-      setStatus(
-        `Error: ${error instanceof Error ? error.message : "Unknown error"}`,
-      );
+      cancelled = signal.aborted || cancelContextRef.current.cancelRequested;
+      if (mountedRef.current) {
+        if (cancelled) {
+          setStatus("Download cancelled");
+          setProgress(0);
+        } else {
+          console.error("MediaBunny video processing failed:", error);
+          setStatus(
+            `Error: ${error instanceof Error ? error.message : "Unknown error"}`,
+          );
+        }
+      }
     } finally {
+      cancelContextRef.current.cancelRequested = true;
+      try {
+        cancelContextRef.current.videoSource?.close();
+      } catch {}
+      try {
+        audioSource?.close();
+      } catch {}
+      if (!outputFinalized) {
+        await cancelContextRef.current.output?.cancel().catch(() => {});
+      }
+      await audioPumpPromise?.catch(() => {});
       // Release all reusable canvases and buffers to free memory
       reusableBlurCanvas = null;
       reusableBlurCtx = null;
@@ -1223,16 +1271,26 @@ export function useVideoDownloadMediaBunny({
       cancelContextRef.current.output = null;
       cancelContextRef.current.videoSource = null;
       const wasCancelled = cancelled;
-      setIsProcessing(false);
-      if (progressTimeoutRef.current) clearTimeout(progressTimeoutRef.current);
-      progressTimeoutRef.current = setTimeout(
-        () => setProgress(0),
-        wasCancelled ? 500 : 3000,
-      );
+      if (mountedRef.current) {
+        setIsProcessing(false);
+        if (video.src === savedVideoSrc) {
+          video.currentTime = savedVideoTime;
+          if (wasPlaying) void video.play().catch(() => {});
+        }
+        if (progressTimeoutRef.current)
+          clearTimeout(progressTimeoutRef.current);
+        progressTimeoutRef.current = setTimeout(
+          () => setProgress(0),
+          wasCancelled ? 500 : 3000,
+        );
+      }
       cancelContextRef.current.cancelRequested = false;
+      if (exportControllerRef.current === controller)
+        exportControllerRef.current = null;
     }
   }, [
     videoRef,
+    videoDuration,
     transcriptChunks,
     subtitleStyle,
     mode,
@@ -1246,13 +1304,15 @@ export function useVideoDownloadMediaBunny({
     buildExportTimeline,
     silenceRemovalRanges,
     autoZoomEnabled,
+    cropTrackingEnabled,
   ]);
 
   const cancelDownload = useCallback(() => {
-    if (!isProcessing) {
+    if (!exportControllerRef.current) {
       return;
     }
     cancelContextRef.current.cancelRequested = true;
+    exportControllerRef.current.abort();
     setStatus("Cancelling download...");
 
     if (cancelContextRef.current.videoSource) {
@@ -1264,11 +1324,21 @@ export function useVideoDownloadMediaBunny({
         cancelContextRef.current.videoSource = null;
       }
     }
-  }, [isProcessing]);
+    void cancelContextRef.current.output?.cancel().catch(() => {});
+  }, []);
 
   useEffect(() => {
+    mountedRef.current = true;
+    const cancelContext = cancelContextRef.current;
     return () => {
+      mountedRef.current = false;
       if (progressTimeoutRef.current) clearTimeout(progressTimeoutRef.current);
+      exportControllerRef.current?.abort();
+      cancelContext.cancelRequested = true;
+      try {
+        cancelContext.videoSource?.close();
+      } catch {}
+      void cancelContext.output?.cancel().catch(() => {});
     };
   }, []);
 

@@ -6,11 +6,13 @@ import {
   transcriptToSrt,
   transcriptToVtt,
   processTranscriptChunks,
+  binarySearchActiveChunk,
   type ProcessedChunk,
   type ProcessedWord,
 } from "@/lib/transcript-utils";
 import { Button } from "@/components/ui/button";
-import { Edit, Ban, EyeOff, SkipForward, Filter } from "lucide-react";
+import { Edit, Eye, EyeOff, SkipForward, Filter, Download } from "lucide-react";
+import panelStyles from "@/components/editor-panels.module.css";
 
 interface TranscriptChunk {
   text: string;
@@ -92,12 +94,22 @@ export function TranscriptSidebar({
     });
   }, [transcript, mode, maxWordsPerLine, dynamicEnabled]);
 
-  // Scroll the active chunk into view when currentTime changes.
-  // Uses instant scroll (not smooth) to avoid layout-thrashing animation during playback.
+  const activeChunk = binarySearchActiveChunk(displayChunks, currentTime);
+  const { skippedCount, hiddenCount } = useMemo(() => {
+    let skippedCount = 0;
+    let hiddenCount = 0;
+    for (const chunk of displayChunks) {
+      if (chunk.disabled) skippedCount++;
+      else if (chunk.subtitleHidden) hiddenCount++;
+    }
+    return { skippedCount, hiddenCount };
+  }, [displayChunks]);
+
+  // Only measure when the active chunk changes. Do not move the list while editing.
   useEffect(() => {
     const el = activeChunkRef.current;
     const container = transcriptContainerRef.current;
-    if (!el || !container) return;
+    if (!el || !container || editingIndex !== null) return;
 
     const scrollTop = container.scrollTop;
     const clientHeight = container.clientHeight;
@@ -110,16 +122,13 @@ export function TranscriptSidebar({
         behavior: "instant",
       });
     }
-  }, [currentTime]);
+  }, [activeChunk, editingIndex]);
 
-  const jsonTranscript = useMemo(() => {
-    return JSON.stringify(transcript, null, 2).replace(
+  const handleDownloadJson = () => {
+    const jsonTranscript = JSON.stringify(transcript, null, 2).replace(
       /( {4}"timestamp": )\[\s+(\S+)\s+(\S+)\s+\]/gm,
       "$1[$2 $3]",
     );
-  }, [transcript]);
-
-  const handleDownloadJson = () => {
     const blob = new Blob([jsonTranscript], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -209,7 +218,10 @@ export function TranscriptSidebar({
     }
 
     const updatedTranscript = {
-      text: updatedChunks.map((chunk) => chunk.text).join(" "),
+      text: updatedChunks
+        .filter((chunk) => !chunk.disabled)
+        .map((chunk) => chunk.text)
+        .join(" "),
       chunks: updatedChunks,
     };
 
@@ -299,7 +311,10 @@ export function TranscriptSidebar({
     }
   };
 
-  const toggleWordDynamicPosition = (wordTimestamp: [number, number]) => {
+  const toggleWordDynamicPosition = (
+    wordTimestamp: [number, number],
+    displayedPosition: "behind" | "front",
+  ) => {
     if (!onTranscriptUpdate) return;
 
     const updatedChunks = transcript.chunks.map((chunk) => {
@@ -307,41 +322,54 @@ export function TranscriptSidebar({
         chunk.timestamp[0] === wordTimestamp[0] &&
         chunk.timestamp[1] === wordTimestamp[1]
       ) {
-        const currentPos = chunk.dynamicPosition || "front";
         return {
           ...chunk,
-          dynamicPosition: (currentPos === "behind" ? "front" : "behind") as
-            | "behind"
-            | "front",
+          dynamicPosition: (displayedPosition === "behind"
+            ? "front"
+            : "behind") as "behind" | "front",
         };
       }
       return chunk;
     });
 
     onTranscriptUpdate({
-      text: updatedChunks.map((c) => c.text).join(" "),
+      text: updatedChunks
+        .filter((chunk) => !chunk.disabled)
+        .map((c) => c.text)
+        .join(" "),
       chunks: updatedChunks,
     });
   };
 
   return (
-    <div className={`flex flex-col ${className}`}>
+    <div
+      className={`${panelStyles.transcriptPanel} flex flex-col ${className}`}
+    >
+      <div className={panelStyles.transcriptHeader}>
+        <h2>Subtitles</h2>
+        <p>
+          Select a line to seek. Edit the words, hide subtitles, or remove a
+          video section.
+        </p>
+        {dynamicEnabled ? (
+          <p>
+            {mode === "phrase"
+              ? "Select a word marked Front or Behind to change its layer."
+              : "Select Line in Style to choose words behind or in front of the person."}
+          </p>
+        ) : null}
+      </div>
       {/* Toolbar */}
-      <div className="flex items-center justify-between px-2 pt-2 pb-1">
+      <div className={panelStyles.transcriptToolbar}>
         <span className="text-xs text-muted-foreground">
-          {(() => {
-            const skipped = displayChunks.filter((c) => c.disabled).length;
-            const hidden = displayChunks.filter(
-              (c) => !c.disabled && c.subtitleHidden,
-            ).length;
-            const parts = [];
-            if (skipped > 0) parts.push(`${skipped} skipped`);
-            if (hidden > 0) parts.push(`${hidden} hidden`);
-            return parts.length > 0 ? <span>{parts.join(", ")}</span> : null;
-          })()}
+          {skippedCount || hiddenCount
+            ? `${skippedCount} removed · ${hiddenCount} hidden`
+            : `${displayChunks.length} ${mode === "word" ? "words" : "lines"}`}
         </span>
-        {displayChunks.some((c) => c.disabled || c.subtitleHidden) && (
+        {skippedCount + hiddenCount > 0 && (
           <button
+            type="button"
+            aria-pressed={hideSkipped}
             onClick={() => setHideSkipped((v) => !v)}
             className={`inline-flex items-center gap-1.5 rounded px-2 py-1 text-xs font-medium transition-colors ${
               hideSkipped
@@ -361,13 +389,13 @@ export function TranscriptSidebar({
       </div>
 
       <div
-        className="flex-1 min-h-0 overflow-y-auto"
+        className={panelStyles.transcriptScroll}
         ref={transcriptContainerRef}
       >
-        <div className="space-y-2 p-2">
+        <div className="pr-1">
           {displayChunks.map((chunk, i) => {
             const [start, end] = chunk.timestamp;
-            const isActive = start <= currentTime && currentTime <= end;
+            const isActive = chunk === activeChunk;
             const isEditing = editingIndex === i;
 
             const isDisabled = chunk.disabled ?? false;
@@ -378,47 +406,63 @@ export function TranscriptSidebar({
             return (
               <div
                 key={`${mode}-${i}-${start}`}
-                ref={
-                  isActive && !isDisabled
-                    ? (el) => {
-                        activeChunkRef.current = el;
-                      }
-                    : null
+                ref={isActive && !isDisabled ? activeChunkRef : null}
+                className={panelStyles.transcriptChunk}
+                data-active={isActive && !isEditing}
+                data-state={
+                  isDisabled ? "skipped" : isHidden ? "hidden" : "normal"
                 }
-                className={`p-2 rounded ${
-                  isEditing ? "bg-muted" : "hover:bg-muted cursor-pointer"
-                } transition-colors ${
-                  isActive && !isEditing
-                    ? "bg-muted border-l-4 border-black"
-                    : ""
-                } ${
-                  isDisabled
-                    ? "opacity-50 bg-muted border-l-4 border-red-400"
-                    : ""
-                } ${
-                  isHidden && !isDisabled
-                    ? "opacity-70 bg-yellow-50 border-l-4 border-yellow-400"
-                    : ""
-                }`}
+                role="group"
+                tabIndex={isEditing ? -1 : 0}
+                aria-label={`Subtitle at ${formatTime(start)}. ${chunk.text}`}
+                onKeyDown={(event) => {
+                  if (event.target !== event.currentTarget || isEditing) return;
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    setCurrentTime(start);
+                  }
+                }}
                 onClick={() => {
                   if (!isEditing) {
                     setCurrentTime(start);
                   }
                 }}
               >
-                <div className="flex justify-between text-xs text-muted-foreground mb-1">
+                <div className={panelStyles.chunkTime}>
                   <span>{formatTime(start)}</span>
+                  <span aria-hidden="true">—</span>
                   <span>{formatTime(end)}</span>
+                  {isDisabled || isHidden ? (
+                    <span className="ml-auto">
+                      {isDisabled ? "Section removed" : "Subtitles hidden"}
+                    </span>
+                  ) : null}
                 </div>
 
                 {isEditing ? (
                   <div className="space-y-2">
                     <textarea
                       value={editText}
+                      aria-label={`Edit subtitle at ${formatTime(start)}`}
                       onChange={(e) => setEditText(e.target.value)}
                       className="w-full p-2 border rounded-md text-sm min-h-[60px]"
                       autoFocus
                       onClick={(e) => e.stopPropagation()}
+                      onKeyDown={(event) => {
+                        event.stopPropagation();
+                        if (event.key === "Escape") {
+                          event.preventDefault();
+                          cancelEdit();
+                        }
+                        if (
+                          event.key === "Enter" &&
+                          (event.ctrlKey || event.metaKey)
+                        ) {
+                          event.preventDefault();
+                          saveEdit();
+                        }
+                      }}
                     />
                     <div className="flex justify-end gap-2">
                       <Button
@@ -426,7 +470,7 @@ export function TranscriptSidebar({
                           e.stopPropagation();
                           cancelEdit();
                         }}
-                        variant="default"
+                        variant="outline"
                         size="sm"
                       >
                         Cancel
@@ -446,11 +490,11 @@ export function TranscriptSidebar({
                   <div>
                     <div className="flex justify-between items-start">
                       <p
-                        className={`${isActive ? "font-medium" : ""} ${isDisabled ? "line-through text-muted-foreground" : ""} ${isHidden && !isDisabled ? "italic text-yellow-700" : ""}`}
+                        className={`${panelStyles.chunkText} ${isActive ? "font-medium" : ""} ${isDisabled ? "line-through text-muted-foreground" : ""} ${isHidden && !isDisabled ? "italic text-yellow-800" : ""}`}
                       >
                         {chunk.text}
                       </p>
-                      <div className="flex gap-1 shrink-0 ml-1">
+                      <div className={panelStyles.chunkActions}>
                         <Button
                           onClick={(e) => {
                             e.stopPropagation();
@@ -458,8 +502,9 @@ export function TranscriptSidebar({
                           }}
                           className="p-1"
                           title="Edit text"
+                          aria-label={`Edit subtitle at ${formatTime(start)}`}
                           size="icon"
-                          variant="default"
+                          variant="ghost"
                         >
                           <Edit className="h-3 w-3" />
                         </Button>
@@ -471,20 +516,27 @@ export function TranscriptSidebar({
                           className="p-1"
                           title={
                             isDisabled
-                              ? "Skipped (click to enable)"
+                              ? "Restore this video section"
                               : isHidden
-                                ? "Subs hidden (click to skip)"
-                                : "Click to hide subs"
+                                ? "Remove this video section"
+                                : "Hide subtitles (select again to remove this section)"
+                          }
+                          aria-label={
+                            isDisabled
+                              ? `Restore section at ${formatTime(start)}`
+                              : isHidden
+                                ? `Remove section at ${formatTime(start)}`
+                                : `Hide subtitles at ${formatTime(start)}`
                           }
                           size="icon"
-                          variant="default"
+                          variant="ghost"
                         >
                           {isDisabled ? (
                             <SkipForward className="h-3 w-3 text-red-500" />
                           ) : isHidden ? (
                             <EyeOff className="h-3 w-3 text-yellow-600" />
                           ) : (
-                            <Ban className="h-3 w-3" />
+                            <Eye className="h-3 w-3" />
                           )}
                         </Button>
                       </div>
@@ -502,9 +554,15 @@ export function TranscriptSidebar({
                               return (
                                 <button
                                   key={`${word.timestamp[0]}-${wordIdx}`}
+                                  type="button"
+                                  aria-label={`${word.text}: ${isBehind ? "behind" : "in front of"} person`}
+                                  aria-pressed={isBehind}
                                   onClick={(e) => {
                                     e.stopPropagation();
-                                    toggleWordDynamicPosition(word.timestamp);
+                                    toggleWordDynamicPosition(
+                                      word.timestamp,
+                                      pos,
+                                    );
                                   }}
                                   className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium transition-colors ${
                                     isBehind
@@ -520,7 +578,7 @@ export function TranscriptSidebar({
                                   <span
                                     className={`text-[10px] font-bold ${isBehind ? "text-purple-600" : "text-blue-500"}`}
                                   >
-                                    {isBehind ? "B" : "F"}
+                                    {isBehind ? "Behind" : "Front"}
                                   </span>
                                   {word.text}
                                 </button>
@@ -537,30 +595,33 @@ export function TranscriptSidebar({
         </div>
       </div>
 
-      <div className="border-t p-4 space-y-2">
-        <div className="text-sm font-medium mb-2">Export Subtitles</div>
-        <div className="grid grid-cols-2 gap-2">
+      <div className={panelStyles.transcriptExports}>
+        <div className="text-xs font-semibold mb-3">Download subtitles</div>
+        <div className="grid grid-cols-3 gap-2">
           <Button
             onClick={handleDownloadJson}
-            className="flex items-center justify-center gap-1 px-3 py-2 "
+            variant="outline"
+            className="h-9 gap-1 px-2 text-xs"
           >
-            <Edit />
+            <Download size={13} />
             JSON
           </Button>
 
           <Button
             onClick={handleDownloadSrt}
-            className="flex items-center justify-center gap-1 px-3 py-2 "
+            variant="outline"
+            className="h-9 gap-1 px-2 text-xs"
           >
-            <Edit />
+            <Download size={13} />
             SRT
           </Button>
 
           <Button
             onClick={handleDownloadVtt}
-            className="flex items-center justify-center gap-1 px-3 py-2  col-span-2"
+            variant="outline"
+            className="h-9 gap-1 px-2 text-xs"
           >
-            <Edit />
+            <Download size={13} />
             WebVTT
           </Button>
         </div>

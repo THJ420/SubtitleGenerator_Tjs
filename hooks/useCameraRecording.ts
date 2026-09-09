@@ -103,6 +103,10 @@ export function useCameraRecording(): UseCameraRecordingReturn {
   const recordedBytesRef = useRef<Uint8Array | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const selectedDeviceIdRef = useRef<string | null>(null);
+  const operationIdRef = useRef(0);
+  const recordedUrlRef = useRef<string | null>(null);
+  const recordingBusyRef = useRef(false);
+  const finalizingRef = useRef(false);
 
   // MediaBunny refs
   const outputRef = useRef<Output | null>(null);
@@ -118,6 +122,14 @@ export function useCameraRecording(): UseCameraRecordingReturn {
   const stopTracks = useCallback(() => {
     streamRef.current?.getTracks().forEach((t) => t.stop());
     streamRef.current = null;
+    if (previewRef.current) previewRef.current.srcObject = null;
+  }, []);
+
+  const clearRecording = useCallback(() => {
+    if (recordedUrlRef.current) URL.revokeObjectURL(recordedUrlRef.current);
+    recordedUrlRef.current = null;
+    recordedBytesRef.current = null;
+    blobRef.current = null;
   }, []);
 
   const clearTimer = useCallback(() => {
@@ -144,11 +156,13 @@ export function useCameraRecording(): UseCameraRecordingReturn {
 
   const refreshDevices = useCallback(
     async (activeDeviceId?: string | null): Promise<CameraDevice[]> => {
+      const operationId = operationIdRef.current;
       if (typeof navigator.mediaDevices?.enumerateDevices !== "function") {
         return [];
       }
 
       const devices = await navigator.mediaDevices.enumerateDevices();
+      if (operationId !== operationIdRef.current) return [];
       const cameras = devices
         .filter((device) => device.kind === "videoinput")
         .map((device, index) => ({
@@ -172,6 +186,7 @@ export function useCameraRecording(): UseCameraRecordingReturn {
       setSelectedDeviceId(activeDeviceId);
 
       const cameras = await refreshDevices(activeDeviceId);
+      if (streamRef.current !== stream) return;
       const activeDevice = cameras.find(
         (camera) => camera.deviceId === activeDeviceId,
       );
@@ -253,6 +268,8 @@ export function useCameraRecording(): UseCameraRecordingReturn {
   );
 
   const openCamera = useCallback(async () => {
+    const operationId = ++operationIdRef.current;
+    stopTracks();
     setState("requesting");
     setError(null);
 
@@ -267,17 +284,27 @@ export function useCameraRecording(): UseCameraRecordingReturn {
         deviceId: selectedDeviceIdRef.current,
         facing: facingMode,
       });
+      if (operationId !== operationIdRef.current) {
+        stream.getTracks().forEach((track) => track.stop());
+        return;
+      }
       attachStream(stream);
       await syncActiveCamera(stream, facingMode);
+      if (operationId !== operationIdRef.current) return;
       setState("previewing");
     } catch (err) {
+      if (operationId !== operationIdRef.current) return;
+      stopTracks();
       setError(getErrorMessage(err));
       setState("error");
     }
-  }, [facingMode, requestStream, attachStream, syncActiveCamera]);
+  }, [facingMode, requestStream, attachStream, syncActiveCamera, stopTracks]);
 
   const stopRecording = useCallback(async () => {
-    if (!outputRef.current) return;
+    if (!outputRef.current || finalizingRef.current) return;
+    finalizingRef.current = true;
+    const operationId = operationIdRef.current;
+    const output = outputRef.current;
 
     clearTimer();
     clearFrameInterval();
@@ -295,9 +322,10 @@ export function useCameraRecording(): UseCameraRecordingReturn {
       }
       audioSourcesRef.current = [];
 
-      await outputRef.current.finalize();
+      await output.finalize();
+      if (operationId !== operationIdRef.current) return;
 
-      const buffer = (outputRef.current.target as BufferTarget).buffer;
+      const buffer = (output.target as BufferTarget).buffer;
       if (!buffer) {
         throw new Error("No output buffer from MP4 encoder.");
       }
@@ -314,24 +342,40 @@ export function useCameraRecording(): UseCameraRecordingReturn {
       }
 
       const url = URL.createObjectURL(blob);
+      if (recordedUrlRef.current) URL.revokeObjectURL(recordedUrlRef.current);
+      recordedUrlRef.current = url;
       setRecordedVideoUrl(url);
       outputRef.current = null;
 
       // Only transition to recorded AFTER the blob URL is ready
       setState("recorded");
     } catch (err) {
+      if (operationId !== operationIdRef.current) return;
       console.error("Error finalizing MP4:", err);
-      outputRef.current?.cancel();
+      await output.cancel().catch(() => {});
       outputRef.current = null;
       recordedBytesRef.current = null;
       setError("Failed to finalize recording.");
       setState("error");
+    } finally {
+      if (operationId === operationIdRef.current) {
+        recordingBusyRef.current = false;
+        finalizingRef.current = false;
+        stopTracks();
+      }
     }
   }, [clearTimer, clearFrameInterval, stopTracks]);
 
   const startRecording = useCallback(async () => {
-    if (state !== "previewing" || !streamRef.current || !previewRef.current)
+    if (
+      recordingBusyRef.current ||
+      state !== "previewing" ||
+      !streamRef.current ||
+      !previewRef.current
+    )
       return;
+    recordingBusyRef.current = true;
+    const operationId = operationIdRef.current;
 
     const video = previewRef.current;
     let width = video.videoWidth || 1280;
@@ -394,6 +438,10 @@ export function useCameraRecording(): UseCameraRecordingReturn {
       audioSourcesRef.current = audioSources;
 
       await output.start();
+      if (operationId !== operationIdRef.current) {
+        await output.cancel().catch(() => {});
+        return;
+      }
 
       recordingStartRef.current = Date.now();
       lastFrameNumberRef.current = -1;
@@ -401,7 +449,12 @@ export function useCameraRecording(): UseCameraRecordingReturn {
 
       // Frame capture loop — draw camera to canvas, let CanvasSource encode it
       const addFrame = async () => {
-        if (!readyForFrameRef.current || !videoSourceRef.current) return;
+        if (
+          operationId !== operationIdRef.current ||
+          !readyForFrameRef.current ||
+          !videoSourceRef.current
+        )
+          return;
 
         const elapsed = (Date.now() - recordingStartRef.current) / 1000;
         const frameNumber = Math.round(elapsed * FRAME_RATE);
@@ -417,7 +470,8 @@ export function useCameraRecording(): UseCameraRecordingReturn {
         } catch (e) {
           console.warn("Frame encode error:", e);
         }
-        readyForFrameRef.current = true;
+        if (operationId === operationIdRef.current)
+          readyForFrameRef.current = true;
       };
 
       frameIntervalRef.current = window.setInterval(() => {
@@ -435,16 +489,23 @@ export function useCameraRecording(): UseCameraRecordingReturn {
         if (elapsed >= MAX_RECORDING_SECONDS) void stopRecording();
       }, 1000);
     } catch (err) {
+      if (operationId !== operationIdRef.current) return;
       console.error("Error starting MP4 recording:", err);
       clearFrameInterval();
-      outputRef.current?.cancel();
+      await outputRef.current?.cancel().catch(() => {});
       outputRef.current = null;
+      videoSourceRef.current?.close();
+      videoSourceRef.current = null;
+      for (const source of audioSourcesRef.current) source.close();
+      audioSourcesRef.current = [];
+      recordingBusyRef.current = false;
+      stopTracks();
       setError(
         "Failed to start recording. Your browser may not support MP4 encoding.",
       );
       setState("error");
     }
-  }, [state, clearFrameInterval, stopRecording]);
+  }, [state, clearFrameInterval, stopRecording, stopTracks]);
 
   const selectCamera = useCallback(
     async (deviceId: string) => {
@@ -452,6 +513,7 @@ export function useCameraRecording(): UseCameraRecordingReturn {
       setSelectedDeviceId(deviceId);
 
       if (state !== "previewing") return;
+      const operationId = ++operationIdRef.current;
 
       stopTracks();
       setState("requesting");
@@ -459,10 +521,17 @@ export function useCameraRecording(): UseCameraRecordingReturn {
 
       try {
         const stream = await requestStream({ deviceId, facing: facingMode });
+        if (operationId !== operationIdRef.current) {
+          stream.getTracks().forEach((track) => track.stop());
+          return;
+        }
         attachStream(stream);
         await syncActiveCamera(stream, facingMode);
+        if (operationId !== operationIdRef.current) return;
         setState("previewing");
       } catch (err) {
+        if (operationId !== operationIdRef.current) return;
+        stopTracks();
         setError(getErrorMessage(err));
         setState("error");
       }
@@ -479,11 +548,13 @@ export function useCameraRecording(): UseCameraRecordingReturn {
 
   const flipCamera = useCallback(async () => {
     if (state !== "previewing") return;
+    const operationId = ++operationIdRef.current;
 
     const cameras =
       videoDevices.length > 0
         ? videoDevices
         : await refreshDevices(selectedDeviceIdRef.current);
+    if (operationId !== operationIdRef.current) return;
 
     if (cameras.length > 1) {
       const currentIndex = cameras.findIndex(
@@ -501,10 +572,17 @@ export function useCameraRecording(): UseCameraRecordingReturn {
 
     try {
       const stream = await requestStream({ facing: newFacing });
+      if (operationId !== operationIdRef.current) {
+        stream.getTracks().forEach((track) => track.stop());
+        return;
+      }
       attachStream(stream);
       await syncActiveCamera(stream, newFacing);
+      if (operationId !== operationIdRef.current) return;
       setState("previewing");
     } catch (err) {
+      if (operationId !== operationIdRef.current) return;
+      stopTracks();
       setError(getErrorMessage(err));
       setState("error");
     }
@@ -530,7 +608,7 @@ export function useCameraRecording(): UseCameraRecordingReturn {
       lastModified: Date.now(),
     });
 
-    if (recordedVideoUrl) URL.revokeObjectURL(recordedVideoUrl);
+    clearRecording();
     setRecordedVideoUrl(null);
     recordedBytesRef.current = null;
     blobRef.current = null;
@@ -539,10 +617,13 @@ export function useCameraRecording(): UseCameraRecordingReturn {
     setElapsedSeconds(0);
 
     return file;
-  }, [recordedVideoUrl, stopTracks]);
+  }, [clearRecording, stopTracks]);
 
   const discardRecording = useCallback(async () => {
-    if (recordedVideoUrl) URL.revokeObjectURL(recordedVideoUrl);
+    const operationId = ++operationIdRef.current;
+    clearRecording();
+    stopTracks();
+    setState("requesting");
     setRecordedVideoUrl(null);
     recordedBytesRef.current = null;
     blobRef.current = null;
@@ -552,16 +633,24 @@ export function useCameraRecording(): UseCameraRecordingReturn {
         deviceId: selectedDeviceIdRef.current,
         facing: facingMode,
       });
+      if (operationId !== operationIdRef.current) {
+        stream.getTracks().forEach((track) => track.stop());
+        return;
+      }
       attachStream(stream);
       await syncActiveCamera(stream, facingMode);
+      if (operationId !== operationIdRef.current) return;
       setState("previewing");
     } catch (err) {
+      if (operationId !== operationIdRef.current) return;
+      stopTracks();
       setError(getErrorMessage(err));
       setState("error");
     }
     setElapsedSeconds(0);
   }, [
-    recordedVideoUrl,
+    clearRecording,
+    stopTracks,
     facingMode,
     requestStream,
     attachStream,
@@ -569,6 +658,9 @@ export function useCameraRecording(): UseCameraRecordingReturn {
   ]);
 
   const closeCamera = useCallback(() => {
+    operationIdRef.current++;
+    recordingBusyRef.current = false;
+    finalizingRef.current = false;
     clearTimer();
     clearFrameInterval();
 
@@ -580,7 +672,7 @@ export function useCameraRecording(): UseCameraRecordingReturn {
         src.close();
       }
       audioSourcesRef.current = [];
-      outputRef.current.cancel();
+      void outputRef.current.cancel().catch(() => {});
       outputRef.current = null;
     }
 
@@ -588,28 +680,36 @@ export function useCameraRecording(): UseCameraRecordingReturn {
     if (previewRef.current) {
       previewRef.current.srcObject = null;
     }
-    if (recordedVideoUrl) URL.revokeObjectURL(recordedVideoUrl);
+    clearRecording();
     setRecordedVideoUrl(null);
     recordedBytesRef.current = null;
     blobRef.current = null;
     setElapsedSeconds(0);
     setError(null);
     setState("idle");
-  }, [clearTimer, clearFrameInterval, stopTracks, recordedVideoUrl]);
+  }, [clearTimer, clearFrameInterval, stopTracks, clearRecording]);
 
   useEffect(() => {
     return () => {
+      operationIdRef.current = operationIdRef.current + 1;
+      recordingBusyRef.current = false;
+      finalizingRef.current = false;
       if (timerRef.current) clearInterval(timerRef.current);
       if (frameIntervalRef.current) clearInterval(frameIntervalRef.current);
-      streamRef.current?.getTracks().forEach((t) => t.stop());
-      recordedBytesRef.current = null;
+      stopTracks();
+      clearRecording();
       if (outputRef.current) {
         videoSourceRef.current?.close();
         for (const src of audioSourcesRef.current) src.close();
-        outputRef.current.cancel();
+        void outputRef.current.cancel().catch(() => {});
+        outputRef.current = null;
       }
+      videoSourceRef.current = null;
+      audioSourcesRef.current = [];
+      canvasRef.current = null;
+      ctxRef.current = null;
     };
-  }, []);
+  }, [stopTracks, clearRecording]);
 
   const selectedDeviceLabel = useMemo(
     () =>

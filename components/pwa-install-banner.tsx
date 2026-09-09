@@ -150,7 +150,11 @@ export function PwaInstallBanner(): JSX.Element | null {
     : "Install it for a faster, app-like experience with the Based Subs icon on your home screen.";
 
   return (
-    <div className="fixed inset-x-0 bottom-4 z-50 px-4">
+    <div
+      className="fixed inset-x-0 bottom-4 z-50 px-4"
+      role="region"
+      aria-label="Install Based Subtitles"
+    >
       <div className="mx-auto max-w-xl overflow-hidden rounded-2xl border border-border bg-background/95 shadow-2xl backdrop-blur">
         <div className="flex items-start gap-3 p-4 sm:p-5">
           <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-foreground text-sm font-extrabold tracking-tight text-background">

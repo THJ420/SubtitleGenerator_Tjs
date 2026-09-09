@@ -1,4 +1,5 @@
-import { useRef, useCallback, useState } from "react";
+import { useRef, useCallback, useState, useEffect } from "react";
+import { seekVideo, withAbortSignal } from "@/lib/media-lifecycle";
 import {
   type PositionKeyframe,
   type PositionTimeline,
@@ -19,6 +20,8 @@ export interface UseFaceTrackingReturn {
   buildExportTimeline: (
     videoElement: HTMLVideoElement,
     onProgress?: (percent: number) => void,
+    signal?: AbortSignal,
+    knownDuration?: number,
   ) => Promise<PositionTimeline>;
 }
 
@@ -31,15 +34,19 @@ export function useFaceTracking(): UseFaceTrackingReturn {
   const rafRef = useRef<number>(0);
   const smoothedCenterXRef = useRef<number>(0.5);
   const lastTimeRef = useRef<number>(-1);
-  const timelineRef = useRef<PositionKeyframe[]>([]);
+  const timelineRef = useRef(new Map<number, PositionKeyframe>());
   const trackingActiveRef = useRef(false);
   const trackedSrcRef = useRef<string>("");
+  const trackingIdRef = useRef(0);
+  const lifecycleIdRef = useRef(0);
+  const exportControllerRef = useRef<AbortController | null>(null);
 
   const ensureDetector = useCallback(async (): Promise<FaceDetector> => {
     if (detectorRef.current) return detectorRef.current;
     if (initPromiseRef.current) return initPromiseRef.current;
 
     setIsLoading(true);
+    const lifecycleId = lifecycleIdRef.current;
     initPromiseRef.current = (async () => {
       const { FaceDetector, FilesetResolver } =
         await import("@mediapipe/tasks-vision");
@@ -55,18 +62,27 @@ export function useFaceTracking(): UseFaceTrackingReturn {
           return;
         origError.apply(console, args);
       };
-      const detector = await FaceDetector.createFromOptions(vision, {
-        baseOptions: { modelAssetPath: MODEL_URL },
-        runningMode: "VIDEO",
-        minDetectionConfidence: 0.5,
-      });
-      console.error = origError;
+      let detector: FaceDetector;
+      try {
+        detector = await FaceDetector.createFromOptions(vision, {
+          baseOptions: { modelAssetPath: MODEL_URL },
+          runningMode: "VIDEO",
+          minDetectionConfidence: 0.5,
+        });
+      } finally {
+        console.error = origError;
+      }
+      if (lifecycleId !== lifecycleIdRef.current) {
+        detector.close();
+        throw new DOMException("Cancelled", "AbortError");
+      }
       detectorRef.current = detector;
       setIsLoading(false);
       return detector;
     })();
 
     initPromiseRef.current.catch(() => {
+      if (lifecycleId !== lifecycleIdRef.current) return;
       initPromiseRef.current = null;
       setIsLoading(false);
     });
@@ -93,8 +109,11 @@ export function useFaceTracking(): UseFaceTrackingReturn {
               return;
             origError.apply(console, args);
           };
-          result = detector.detectForVideo(video, timestamp);
-          console.error = origError;
+          try {
+            result = detector.detectForVideo(video, timestamp);
+          } finally {
+            console.error = origError;
+          }
         } else {
           result = detector.detectForVideo(video, timestamp);
         }
@@ -130,61 +149,93 @@ export function useFaceTracking(): UseFaceTrackingReturn {
     (videoElement: HTMLVideoElement) => {
       if (trackingActiveRef.current) return;
       trackingActiveRef.current = true;
+      const trackingId = ++trackingIdRef.current;
       // Only reset timeline when the video source changes (not on ratio/setting changes)
       if (videoElement.src !== trackedSrcRef.current) {
         trackedSrcRef.current = videoElement.src;
         smoothedCenterXRef.current = 0.5;
         lastTimeRef.current = -1;
-        timelineRef.current = [];
+        timelineRef.current.clear();
       }
 
-      ensureDetector().then((detector) => {
-        if (!trackingActiveRef.current) return;
-
-        const render = () => {
-          if (!trackingActiveRef.current) return;
-
-          const time = videoElement.currentTime;
-          // Skip if video doesn't have frame data yet or time hasn't changed
+      ensureDetector()
+        .then((detector) => {
           if (
-            videoElement.readyState >= 2 &&
-            time !== lastTimeRef.current &&
-            !videoElement.paused
-          ) {
-            lastTimeRef.current = time;
-            // MediaPipe needs a monotonically increasing timestamp in ms
-            const tsMs = performance.now();
-            const rawCx = extractCenterX(detector, videoElement, tsMs);
+            !trackingActiveRef.current ||
+            trackingId !== trackingIdRef.current
+          )
+            return;
 
-            if (rawCx !== null) {
-              smoothedCenterXRef.current = smoothCenterX(
-                smoothedCenterXRef.current,
-                rawCx,
-              );
-              timelineRef.current.push({
-                time,
-                centerX: smoothedCenterXRef.current,
-              });
+          const render = () => {
+            if (
+              !trackingActiveRef.current ||
+              trackingId !== trackingIdRef.current
+            )
+              return;
+
+            const time = videoElement.currentTime;
+            // Skip if video doesn't have frame data yet or time hasn't changed
+            if (
+              videoElement.readyState >= 2 &&
+              !videoElement.seeking &&
+              time !== lastTimeRef.current &&
+              !videoElement.paused
+            ) {
+              lastTimeRef.current = time;
+              // MediaPipe needs a monotonically increasing timestamp in ms
+              const tsMs = performance.now();
+              const rawCx = extractCenterX(detector, videoElement, tsMs);
+
+              if (rawCx !== null) {
+                smoothedCenterXRef.current = smoothCenterX(
+                  smoothedCenterXRef.current,
+                  rawCx,
+                );
+                // Bound preview history to eight samples per video second,
+                // including when the user replays or seeks through the video.
+                timelineRef.current.set(Math.floor(time * 8), {
+                  time,
+                  centerX: smoothedCenterXRef.current,
+                });
+              }
+              // On no face: hold last position (smoothedCenterXRef stays)
             }
-            // On no face: hold last position (smoothedCenterXRef stays)
-          }
+
+            rafRef.current = requestAnimationFrame(render);
+          };
 
           rafRef.current = requestAnimationFrame(render);
-        };
-
-        rafRef.current = requestAnimationFrame(render);
-      });
+        })
+        .catch(() => {
+          if (trackingId === trackingIdRef.current)
+            trackingActiveRef.current = false;
+        });
     },
     [ensureDetector, extractCenterX],
   );
 
   const stopTracking = useCallback(() => {
+    trackingIdRef.current++;
     trackingActiveRef.current = false;
     if (rafRef.current) {
       cancelAnimationFrame(rafRef.current);
       rafRef.current = 0;
     }
   }, []);
+
+  useEffect(() => {
+    const timeline = timelineRef.current;
+    return () => {
+      lifecycleIdRef.current = lifecycleIdRef.current + 1;
+      stopTracking();
+      exportControllerRef.current?.abort();
+      exportControllerRef.current = null;
+      detectorRef.current?.close();
+      detectorRef.current = null;
+      initPromiseRef.current = null;
+      timeline.clear();
+    };
+  }, [stopTracking]);
 
   const getCenterX = useCallback((): number => {
     return smoothedCenterXRef.current;
@@ -194,15 +245,25 @@ export function useFaceTracking(): UseFaceTrackingReturn {
     async (
       videoElement: HTMLVideoElement,
       onProgress?: (percent: number) => void,
+      signal?: AbortSignal,
+      knownDuration?: number,
     ): Promise<PositionTimeline> => {
-      const duration = videoElement.duration;
+      const duration =
+        Number.isFinite(videoElement.duration) && videoElement.duration > 0
+          ? videoElement.duration
+          : knownDuration;
+      signal?.throwIfAborted();
+      if (!duration || !Number.isFinite(duration) || duration <= 0) return [];
 
       // Use preview timeline only if it covers at least 90% of the video.
       // Partial data (e.g. user watched first 5s of a 30s video) would cause
       // the export crop to lock at the last tracked position for the rest.
-      const preview = timelineRef.current;
+      const preview = Array.from(timelineRef.current.values()).sort(
+        (a, b) => a.time - b.time,
+      );
       if (
-        preview.length > 0 &&
+        videoElement.src === trackedSrcRef.current &&
+        preview.length >= duration * 8 * 0.9 &&
         preview[preview.length - 1].time >= duration * 0.9
       ) {
         return preview;
@@ -211,7 +272,12 @@ export function useFaceTracking(): UseFaceTrackingReturn {
       // Scan the video at 2fps — face positions change slowly and the
       // timeline is interpolated/smoothed, so 2fps is plenty while being
       // 2.5× faster than the previous 5fps scan.
-      const detector = await ensureDetector();
+      exportControllerRef.current?.abort();
+      const controller = new AbortController();
+      exportControllerRef.current = controller;
+      const onAbort = () => controller.abort();
+      signal?.addEventListener("abort", onAbort, { once: true });
+      const exportSignal = controller.signal;
       const step = 1 / 2; // 2fps
       const totalSteps = Math.ceil(duration / step);
       const timeline: PositionTimeline = [];
@@ -220,48 +286,49 @@ export function useFaceTracking(): UseFaceTrackingReturn {
       const wasPlaying = !videoElement.paused;
       if (wasPlaying) videoElement.pause();
       const savedTime = videoElement.currentTime;
+      const savedSrc = videoElement.src;
 
-      let stepIndex = 0;
-      for (let t = 0; t < duration; t += step) {
-        // Report progress
-        if (onProgress && stepIndex % 4 === 0) {
-          onProgress(Math.min(100, (stepIndex / totalSteps) * 100));
+      try {
+        const detector = await withAbortSignal(ensureDetector(), exportSignal);
+        exportSignal.throwIfAborted();
+        let stepIndex = 0;
+        for (let t = 0; t < duration; t += step) {
+          // Report progress
+          if (onProgress && stepIndex % 4 === 0) {
+            onProgress(Math.min(100, (stepIndex / totalSteps) * 100));
+          }
+          stepIndex++;
+
+          // Add the seeked listener BEFORE setting currentTime so we never miss
+          // the event. Skip the seek entirely if already at the target time.
+          await seekVideo(videoElement, t, exportSignal);
+
+          const tsMs = performance.now();
+          const rawCx = extractCenterX(detector, videoElement, tsMs);
+          if (rawCx !== null) {
+            timeline.push({ time: t, centerX: rawCx });
+          } else if (timeline.length > 0) {
+            // Hold last known position
+            timeline.push({
+              time: t,
+              centerX: timeline[timeline.length - 1].centerX,
+            });
+          } else {
+            timeline.push({ time: t, centerX: 0.5 });
+          }
         }
-        stepIndex++;
 
-        // Add the seeked listener BEFORE setting currentTime so we never miss
-        // the event. Skip the seek entirely if already at the target time.
-        if (Math.abs(videoElement.currentTime - t) >= 0.01) {
-          await new Promise<void>((resolve) => {
-            const onSeeked = () => {
-              videoElement.removeEventListener("seeked", onSeeked);
-              resolve();
-            };
-            videoElement.addEventListener("seeked", onSeeked);
-            videoElement.currentTime = t;
-          });
-        }
-
-        const tsMs = performance.now();
-        const rawCx = extractCenterX(detector, videoElement, tsMs);
-        if (rawCx !== null) {
-          timeline.push({ time: t, centerX: rawCx });
-        } else if (timeline.length > 0) {
-          // Hold last known position
-          timeline.push({
-            time: t,
-            centerX: timeline[timeline.length - 1].centerX,
-          });
-        } else {
-          timeline.push({ time: t, centerX: 0.5 });
+        return smoothTimeline(timeline);
+      } finally {
+        signal?.removeEventListener("abort", onAbort);
+        if (exportControllerRef.current === controller) {
+          exportControllerRef.current = null;
+          if (videoElement.src === savedSrc) {
+            videoElement.currentTime = savedTime;
+            if (wasPlaying) void videoElement.play().catch(() => {});
+          }
         }
       }
-
-      // Restore
-      videoElement.currentTime = savedTime;
-      if (wasPlaying) videoElement.play();
-
-      return smoothTimeline(timeline);
     },
     [ensureDetector, extractCenterX],
   );

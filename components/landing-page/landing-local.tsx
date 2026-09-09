@@ -1,217 +1,139 @@
-"use client";
-
-import type { JSX } from "react";
 import {
-  Monitor,
-  ServerOff,
-  Lock,
+  Check,
   Cpu,
   HardDrive,
+  LockKeyhole,
+  Monitor,
   ShieldCheck,
+  VideoOff,
 } from "lucide-react";
+import { BrowserChrome, HandNote, ReadyFile } from "./landing-visuals";
+import styles from "./landing.module.css";
 
 const PRIVACY_POINTS = [
   {
-    icon: ServerOff,
-    title: "No servers",
-    desc: "Zero backend. Your video never touches a remote machine.",
+    icon: VideoOff,
+    title: "No video uploads",
+    detail: "Your video is processed here, on your own device.",
+    tone: "pink",
   },
   {
-    icon: Lock,
-    title: "No data collection",
-    desc: "We don't track, store, or analyze any of your content.",
+    icon: LockKeyhole,
+    title: "Private by design",
+    detail:
+      "Speech recognition runs in your browser, without sending your audio away.",
+    tone: "yellow",
   },
   {
     icon: Cpu,
-    title: "Your CPU does the work",
-    desc: "WebGPU + WASM powered AI runs on your own hardware.",
+    title: "Your device does the work",
+    detail: "WebGPU and WebAssembly run AI on your own hardware.",
+    tone: "purple",
   },
   {
     icon: HardDrive,
-    title: "Nothing stored",
-    desc: "Files stay in memory during processing, then vanish.",
+    title: "You control your files",
+    detail:
+      "Edit in this session, then download the result when you are ready.",
+    tone: "green",
   },
 ] as const;
 
-export function LandingLocal(): JSX.Element {
+export function LandingLocal() {
   return (
-    <section className="relative py-16 sm:py-24 overflow-hidden">
-      {/* Background with dot pattern */}
-      <div className="absolute inset-0 -z-20 bg-muted" />
-      <div
-        className="pointer-events-none absolute inset-0 -z-10"
-        style={{
-          backgroundImage:
-            "radial-gradient(circle, #b0b8c4 1px, transparent 1px)",
-          backgroundSize: "20px 20px",
-        }}
-      />
-      <div className="pointer-events-none absolute inset-0 -z-[5]">
-        <div className="absolute inset-0 bg-gradient-to-b from-muted via-transparent to-muted" />
-        <div className="absolute inset-0 bg-gradient-to-r from-muted via-transparent to-muted" />
-      </div>
-
-      <div className="mx-auto max-w-7xl px-6">
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-10 lg:gap-16 items-center">
-          {/* Left: Browser visual */}
-          <div className="relative">
-            <div className="rounded-2xl border border-border bg-background shadow-2xl overflow-hidden">
-              {/* Browser chrome */}
-              <div className="flex items-center gap-2 border-b border-border bg-muted px-4 py-2.5">
-                <div className="flex gap-1.5">
-                  <div className="h-2.5 w-2.5 rounded-full bg-red-300" />
-                  <div className="h-2.5 w-2.5 rounded-full bg-amber-300" />
-                  <div className="h-2.5 w-2.5 rounded-full bg-emerald-300" />
+    <section id="local" className={styles.local}>
+      <div className={`${styles.container} ${styles.localGrid}`}>
+        <div className={styles.localVisual}>
+          <HandNote className={styles.localNote} arrow>
+            Runs entirely in
+            <br />
+            your browser.
+          </HandNote>
+          <div
+            className={styles.browserPanel}
+            role="img"
+            aria-label="Illustration of local video processing"
+          >
+            <BrowserChrome />
+            <div className={styles.browserContent}>
+              <div className={styles.processingHeading}>
+                <span>
+                  <Monitor size={25} />
+                </span>
+                <div>
+                  <strong>Processing locally</strong>
+                  <small>AI runs in this browser tab</small>
                 </div>
-                <div className="flex-1 mx-3">
-                  <div className="flex items-center gap-2 rounded-md bg-background border border-border px-3 py-1 text-xs text-muted-foreground">
-                    <Lock className="h-3 w-3" strokeWidth={2} />
-                    <span
-                      style={{
-                        fontFamily: "var(--font-geist-mono), monospace",
-                      }}
-                    >
-                      basedsubs.getbasedapps.com
-                    </span>
-                  </div>
-                </div>
+                <span className={styles.localBadge}>
+                  <i />
+                  100% local
+                </span>
               </div>
-
-              {/* Browser content */}
-              <div className="p-5 sm:p-6 space-y-5">
-                {/* Processing visualization */}
-                <div className="flex items-center gap-3">
-                  <div className="relative flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-primary text-primary-foreground shadow-md">
-                    <Monitor className="h-5 w-5" />
-                    <div className="absolute -top-1 -right-1 h-4 w-4 rounded-full bg-emerald-500 ring-2 ring-background flex items-center justify-center">
-                      <ShieldCheck
-                        className="h-2.5 w-2.5 text-white"
-                        strokeWidth={3}
-                      />
+              <div className={styles.processingBars}>
+                {[
+                  "Audio extraction",
+                  "Whisper transcription",
+                  "Subtitle rendering",
+                ].map((label, index) => (
+                  <div key={label} data-step={index}>
+                    <div>
+                      <span>{label}</span>
+                      <span>100%</span>
                     </div>
+                    <i>
+                      <span />
+                    </i>
                   </div>
+                ))}
+              </div>
+              <div className={styles.processingSuccess}>
+                <Check size={18} />
+                <span>Your video stays on your device.</span>
+                <strong>Complete!</strong>
+              </div>
+              <div className={styles.processingResult}>
+                <ReadyFile />
+                <div className={styles.readyBadge}>
+                  <ShieldCheck size={26} />
                   <div>
-                    <p
-                      className="text-sm font-semibold text-foreground"
-                      style={{ fontFamily: "var(--font-outfit), sans-serif" }}
-                    >
-                      Processing locally
-                    </p>
-                    <p
-                      className="text-xs text-muted-foreground"
-                      style={{ fontFamily: "var(--font-outfit), sans-serif" }}
-                    >
-                      All AI models run in this browser tab
-                    </p>
+                    <strong>Subtitles ready!</strong>
+                    <small>Made on your device.</small>
                   </div>
-                </div>
-
-                {/* Animated pipeline */}
-                <div className="space-y-2.5">
-                  {[
-                    { label: "Audio extraction", color: "bg-blue-500" },
-                    { label: "Whisper transcription", color: "bg-amber-500" },
-                    { label: "Subtitle rendering", color: "bg-amber-500" },
-                  ].map((step, i) => (
-                    <div key={step.label} className="space-y-1">
-                      <div className="flex items-center justify-between">
-                        <span
-                          className="text-xs font-medium text-muted-foreground"
-                          style={{
-                            fontFamily: "var(--font-outfit), sans-serif",
-                          }}
-                        >
-                          {step.label}
-                        </span>
-                        <span
-                          className="text-[10px] text-muted-foreground font-medium uppercase tracking-wider"
-                          style={{
-                            fontFamily: "var(--font-geist-mono), monospace",
-                          }}
-                        >
-                          local
-                        </span>
-                      </div>
-                      <div className="h-1.5 w-full rounded-full bg-muted overflow-hidden">
-                        <div
-                          className={`h-full rounded-full ${step.color} animate-pulse`}
-                          style={{
-                            width: `${85 - i * 15}%`,
-                            animationDelay: `${i * 200}ms`,
-                          }}
-                        />
-                      </div>
-                    </div>
-                  ))}
-                </div>
-
-                {/* Network indicator */}
-                <div className="flex items-center gap-2.5 rounded-lg border border-dashed border-emerald-200 bg-emerald-50/50 px-3 py-2.5">
-                  <ServerOff
-                    className="h-3.5 w-3.5 text-emerald-600 shrink-0"
-                    strokeWidth={1.5}
-                  />
-                  <p
-                    className="text-xs text-emerald-700"
-                    style={{ fontFamily: "var(--font-outfit), sans-serif" }}
-                  >
-                    <span className="font-semibold">0 network requests</span> —
-                    all processing happens on your device
-                  </p>
                 </div>
               </div>
             </div>
           </div>
-
-          {/* Right: Copy + points */}
-          <div>
-            <span
-              className="text-xs font-semibold uppercase tracking-widest text-amber-600"
-              style={{ fontFamily: "var(--font-outfit), sans-serif" }}
-            >
-              Privacy by design
-            </span>
-            <h2
-              className="mt-3 text-3xl sm:text-4xl font-bold tracking-tight text-foreground"
-              style={{ fontFamily: "var(--font-outfit), sans-serif" }}
-            >
-              Your browser is
-              <br />
-              the entire studio.
-            </h2>
-            <p
-              className="mt-3 text-base text-muted-foreground leading-relaxed"
-              style={{ fontFamily: "var(--font-outfit), sans-serif" }}
-            >
-              No cloud. No uploads. No tracking. The AI models download once,
-              then everything runs locally using WebGPU and WebAssembly. Your
-              video files never leave your machine.
-            </p>
-
-            <div className="mt-8 grid grid-cols-1 sm:grid-cols-2 gap-5">
-              {PRIVACY_POINTS.map(({ icon: Icon, title, desc }) => (
-                <div key={title} className="flex gap-3">
-                  <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-background text-muted-foreground shadow-sm ring-1 ring-border">
-                    <Icon className="h-4 w-4" strokeWidth={1.5} />
-                  </div>
-                  <div>
-                    <p
-                      className="text-sm font-semibold text-foreground"
-                      style={{ fontFamily: "var(--font-outfit), sans-serif" }}
-                    >
-                      {title}
-                    </p>
-                    <p
-                      className="mt-0.5 text-xs text-muted-foreground leading-relaxed"
-                      style={{ fontFamily: "var(--font-outfit), sans-serif" }}
-                    >
-                      {desc}
-                    </p>
-                  </div>
+        </div>
+        <div className={styles.localCopy}>
+          <h2>
+            Your browser is
+            <br />
+            the entire studio.
+          </h2>
+          <p>
+            The AI models download once. Then your browser does the work with
+            WebGPU and WebAssembly. Your video files stay on your machine.
+          </p>
+          <div className={styles.privacyGrid}>
+            {PRIVACY_POINTS.map(({ icon: Icon, title, detail, tone }) => (
+              <div key={title}>
+                <span className={styles.privacyIcon} data-tone={tone}>
+                  <Icon size={25} strokeWidth={1.8} />
+                </span>
+                <div>
+                  <h3>{title}</h3>
+                  <p>{detail}</p>
                 </div>
-              ))}
-            </div>
+              </div>
+            ))}
           </div>
+          <HandNote className={styles.privacyNote}>
+            Your video.
+            <br />
+            Your device.
+            <br />
+            Your privacy.
+          </HandNote>
         </div>
       </div>
     </section>

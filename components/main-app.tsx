@@ -2,23 +2,24 @@
 
 import type { JSX } from "react";
 import { useRef, useState, useCallback, useEffect, useMemo } from "react";
-import { SiteFooter } from "@/components/site-footer";
-import { BuyMeCoffee } from "@/components/buy-me-coffee";
 import { VideoUpload } from "@/components/video-upload";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import {
   Upload,
   Download,
   Video,
+  SlidersHorizontal,
+  Captions,
+  Info,
+  LockKeyhole,
+  Maximize2,
+  Minimize2,
   ZoomIn,
   ZoomOut,
-  ScanFace,
   Loader2,
-  CheckCircle2,
   RefreshCw,
   RectangleHorizontal,
   RectangleVertical,
-  AudioLines,
   Clapperboard,
 } from "lucide-react";
 import { TranscriptSidebar } from "@/components/transcript-sidebar";
@@ -47,12 +48,10 @@ import {
   STATUS_MESSAGES,
   type TranscriptionResult,
   type ModelSize,
-  type TranscriptionStatus,
 } from "@/hooks/useTranscription";
 import { useVideoDownloadMediaBunny } from "@/hooks/useVideoDownloadMediaBunny";
 import { useBackgroundRemoval } from "@/hooks/useBackgroundRemoval";
 import { useFaceTracking } from "@/hooks/useFaceTracking";
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { type LanguageCode } from "@/components/language-selector";
 import { LanguageSelectionModal } from "@/components/language-selection-modal";
 import {
@@ -72,9 +71,8 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { Settings, FileText, Eraser, Maximize2 } from "lucide-react";
 import { APP_VERSION } from "@/lib/changelog";
-import { extractAudioFromVideo } from "@/lib/audio-utils";
+import { extractAudioFromVideo, NoAudioDetectedError } from "@/lib/audio-utils";
 import {
   createSilenceRemovalPlan,
   detectSilenceRanges,
@@ -83,16 +81,11 @@ import {
   type TimeRange,
 } from "@/lib/silence-removal";
 import { toast } from "sonner";
-
-const PRE_TRANSCRIPTION_DETAILS: Record<TranscriptionStatus, string> = {
-  idle: "Ready when you are.",
-  ready: "Ready when you are.",
-  processing: "Starting the local worker.",
-  loading: "First run can take a minute while the speech model gets ready.",
-  extracting: "Reading audio from your video.",
-  uploading: "Preparing the video.",
-  transcribing: "Words will appear as soon as the first chunk finishes.",
-};
+import { EditorTimeline } from "@/components/editor/editor-timeline";
+import { TranscriptionProgress } from "@/components/editor/transcription-progress";
+import { VideoEffectsControls } from "@/components/editor/video-effects-controls";
+import { PersonSubtitleControls } from "@/components/editor/person-subtitle-controls";
+import styles from "@/components/editor/editor.module.css";
 
 interface MainAppProps {
   initialFile?: File | null;
@@ -149,10 +142,13 @@ export function MainApp({
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
   const [videoDuration, setVideoDuration] = useState(0);
   const [showLanguageModal, setShowLanguageModal] = useState(false);
-  const [mobileTab, setMobileTab] = useState<"styling" | "edit">("styling");
+  const [editorTab, setEditorTab] = useState<"style" | "subtitles" | "video">(
+    "style",
+  );
   const [showAboutSheet, setShowAboutSheet] = useState(false);
-  const [showExpandedSheet, setShowExpandedSheet] = useState(false);
+  const [panelExpanded, setPanelExpanded] = useState(false);
   const [showBgConfirm, setShowBgConfirm] = useState(false);
+  const pendingPersonEffectRef = useRef<"depth" | "background">("background");
   const [showResetConfirm, setShowResetConfirm] = useState(false);
   const [selectedWordTimestamp, setSelectedWordTimestamp] = useState<
     [number, number] | null
@@ -164,8 +160,10 @@ export function MainApp({
   const {
     status,
     error,
+    notice,
     result,
     progress,
+    modelLoading,
     device,
     setResult,
     handleVideoSelect: handleVideoSelectBase,
@@ -196,19 +194,23 @@ export function MainApp({
 
   // Start/stop face tracking: runs when split subtitles, auto zoom, or manual tracking is on
   const splitActive = subtitleStyle.splitSubtitleMode !== "none";
+  const hasTranscript = result !== null;
   useEffect(() => {
     const videoEl = videoRef.current;
     if (!videoEl || !videoEl.src || videoEl.src === window.location.href) {
       return;
     }
 
-    const shouldTrack = faceTrackingEnabled || splitActive || autoZoomEnabled;
-
     const tryStart = () => {
       if (!videoEl.videoWidth) return; // metadata not loaded yet
       const isLandscape = videoEl.videoWidth > videoEl.videoHeight;
       setIsVideoLandscape(isLandscape);
-      if (shouldTrack) {
+      if (
+        hasTranscript &&
+        ((faceTrackingEnabled && ratio === "9:16" && isLandscape) ||
+          splitActive ||
+          autoZoomEnabled)
+      ) {
         startTracking(videoEl);
         setIsFaceTrackingActive(true);
       } else {
@@ -232,6 +234,8 @@ export function MainApp({
   }, [
     ratio,
     faceTrackingEnabled,
+    videoDuration,
+    hasTranscript,
     splitActive,
     autoZoomEnabled,
     startTracking,
@@ -245,10 +249,12 @@ export function MainApp({
   );
   const [isDetectingSilence, setIsDetectingSilence] = useState(false);
   const silenceDetectionRunIdRef = useRef(0);
+  const silenceDetectionAbortRef = useRef<AbortController | null>(null);
 
   const handleVideoSelect = useCallback(
     (file: File) => {
       setUploadedFile(file);
+      silenceDetectionAbortRef.current?.abort();
       silenceDetectionRunIdRef.current += 1;
       setSilenceRemovalLevel("off");
       setSilenceRemovedRanges([]);
@@ -273,6 +279,7 @@ export function MainApp({
 
   const handleLanguageConfirm = useCallback(
     (selectedLanguage: LanguageCode, selectedModelSize: ModelSize) => {
+      videoRef.current?.pause();
       setLanguage(selectedLanguage);
       setModelSize(selectedModelSize);
       setResult(null);
@@ -308,15 +315,17 @@ export function MainApp({
   );
   const silenceDurationLabel =
     silenceRemovalLevel !== "off" && sourceDuration > 0
-      ? `${formatTime(silenceRemovalPlan?.outputDuration ?? sourceDuration)} / ${formatTime(sourceDuration)}`
+      ? `${Math.max(0, sourceDuration - (silenceRemovalPlan?.outputDuration ?? sourceDuration)).toFixed(1)}s shorter`
       : null;
 
   const handleSilenceRemovalLevelChange = useCallback(
     async (value: string) => {
       const nextLevel = value as SilenceRemovalLevel;
+      silenceDetectionAbortRef.current?.abort();
       const runId = silenceDetectionRunIdRef.current + 1;
       silenceDetectionRunIdRef.current = runId;
       setSilenceRemovalLevel(nextLevel);
+      setSilenceRemovedRanges([]);
 
       if (nextLevel === "off") {
         setSilenceRemovedRanges([]);
@@ -331,9 +340,15 @@ export function MainApp({
       }
 
       const levelConfig = SILENCE_REMOVAL_LEVELS[nextLevel];
+      const controller = new AbortController();
+      silenceDetectionAbortRef.current = controller;
       setIsDetectingSilence(true);
       try {
-        const audioData = await extractAudioFromVideo(uploadedFile);
+        const audioData = await extractAudioFromVideo(
+          uploadedFile,
+          controller.signal,
+        );
+        if (silenceDetectionRunIdRef.current !== runId) return;
         const ranges = detectSilenceRanges(audioData, levelConfig.minDuration);
         if (silenceDetectionRunIdRef.current !== runId) return;
         setSilenceRemovedRanges(ranges);
@@ -342,6 +357,12 @@ export function MainApp({
         }
       } catch (error) {
         if (silenceDetectionRunIdRef.current !== runId) return;
+        setSilenceRemovalLevel("off");
+        setSilenceRemovedRanges([]);
+        if (error instanceof NoAudioDetectedError) {
+          toast.info(error.message);
+          return;
+        }
         setSilenceRemovedRanges([]);
         toast.error(
           `Silence detection failed: ${error instanceof Error ? error.message : String(error)}`,
@@ -371,40 +392,73 @@ export function MainApp({
     quality: exportQuality,
     fps: 30,
     bgRemovalReady,
+    videoDuration,
+    cropTrackingEnabled:
+      faceTrackingEnabled && ratio === "9:16" && isVideoLandscape,
     processFrame: bgProcessFrame,
     getMaskAtTime,
     buildExportTimeline:
-      faceTrackingEnabled || autoZoomEnabled ? buildExportTimeline : undefined,
+      (faceTrackingEnabled && ratio === "9:16" && isVideoLandscape) ||
+      splitActive ||
+      autoZoomEnabled
+        ? buildExportTimeline
+        : undefined,
     silenceRemovalRanges:
       silenceRemovalLevel === "off" ? [] : silenceRemovedRanges,
     autoZoomEnabled,
   });
 
-  const startBgRemoval = useCallback(async () => {
-    if (!videoRef.current) return;
-    setSubtitleStyle((prev) => ({
-      ...prev,
-      backgroundRemovalEnabled: true,
-      dynamicEnabled: true,
-    }));
-    try {
-      await processBgRemoval(videoRef.current);
-    } catch {
-      toast.error(
-        "Background removal failed. This feature requires WebGPU or WASM support, which may not be available on your device.",
-      );
-    }
-  }, [processBgRemoval]);
+  const startBgRemoval = useCallback(
+    async (effect: "depth" | "background") => {
+      if (!videoRef.current) return;
+      setSubtitleStyle((prev) => ({
+        ...prev,
+        backgroundRemovalEnabled: effect === "background",
+        dynamicEnabled: effect === "depth",
+      }));
+      try {
+        await processBgRemoval(videoRef.current, videoDuration);
+      } catch (error) {
+        if (error instanceof DOMException && error.name === "AbortError")
+          return;
+        setSubtitleStyle((previous) => ({
+          ...previous,
+          backgroundRemovalEnabled: false,
+          dynamicEnabled: false,
+        }));
+        toast.error(
+          "Background removal failed. This feature requires WebGPU or WASM support, which may not be available on your device.",
+        );
+      }
+    },
+    [processBgRemoval, videoDuration],
+  );
 
-  const handleRemoveBackground = useCallback(async () => {
-    if (!videoRef.current) return;
-    const dur = videoRef.current.duration || 0;
-    if (dur > 60) {
-      setShowBgConfirm(true);
-      return;
-    }
-    startBgRemoval();
-  }, [startBgRemoval]);
+  const handlePersonEffect = useCallback(
+    (effect: "depth" | "background") => {
+      if (!videoRef.current) return;
+      if (bgRemovalReady) {
+        setSubtitleStyle((previous) => ({
+          ...previous,
+          backgroundRemovalEnabled: effect === "background",
+          dynamicEnabled: effect === "depth",
+        }));
+        return;
+      }
+      pendingPersonEffectRef.current = effect;
+      const nativeDuration = videoRef.current.duration;
+      const dur =
+        Number.isFinite(nativeDuration) && nativeDuration > 0
+          ? nativeDuration
+          : videoDuration;
+      if (dur > 60) {
+        setShowBgConfirm(true);
+        return;
+      }
+      void startBgRemoval(effect);
+    },
+    [bgRemovalReady, startBgRemoval, videoDuration],
+  );
 
   const handleCancelBgRemoval = useCallback(() => {
     resetBgRemoval();
@@ -417,6 +471,7 @@ export function MainApp({
 
   // Memoized handlers for better performance
   const handleResetVideo = useCallback(() => {
+    cancelDownload();
     // Reset transcription state
     resetTranscription();
 
@@ -428,12 +483,14 @@ export function MainApp({
     // Reset background removal
     resetBgRemoval();
     silenceDetectionRunIdRef.current += 1;
+    silenceDetectionAbortRef.current?.abort();
     setSilenceRemovalLevel("off");
     setSilenceRemovedRanges([]);
     setIsDetectingSilence(false);
     setSubtitleStyle((prev) => ({
       ...prev,
       backgroundRemovalEnabled: false,
+      dynamicEnabled: false,
     }));
 
     // Clear uploaded file
@@ -458,7 +515,13 @@ export function MainApp({
     }
 
     onReturnToLanding?.();
-  }, [resetTranscription, resetBgRemoval, stopTracking, onReturnToLanding]);
+  }, [
+    resetTranscription,
+    resetBgRemoval,
+    stopTracking,
+    cancelDownload,
+    onReturnToLanding,
+  ]);
 
   const handleModalClose = useCallback(() => {
     if (previousResultRef.current && !result) {
@@ -486,6 +549,12 @@ export function MainApp({
     setRatio(newRatio);
     if (newRatio === "16:9") {
       setZoomPortrait(false);
+    } else {
+      setSubtitleStyle((previous) =>
+        previous.splitSubtitleMode === "left-right"
+          ? { ...previous, splitSubtitleMode: "none" }
+          : previous,
+      );
     }
   }, []);
 
@@ -601,1188 +670,624 @@ export function MainApp({
   const isTranscribingBanner = isProcessing && result !== null;
   const statusMessage = STATUS_MESSAGES[status] ?? "Processing video...";
   const latestTranscribedTime = result?.chunks?.at(-1)?.timestamp?.[1] ?? null;
-  const isLongVideo = (result?.chunks?.at(-1)?.timestamp?.[1] ?? 0) > 30 * 60;
-  const visibleProgress = Math.max(
-    isProcessing ? 5 : 0,
-    Math.min(100, Math.round(progress)),
-  );
+  const visibleProgress = Math.max(0, Math.min(100, Math.round(progress)));
   const deviceLabel = device === "webgpu" ? "WebGPU" : "CPU";
-  const preparationSteps = [
-    {
-      label: "Model",
-      active: status === "processing" || status === "loading",
-      complete:
-        status === "extracting" ||
-        status === "transcribing" ||
-        isTranscribingBanner,
+
+  const handleSeek = useCallback((time: number) => {
+    if (videoRef.current) {
+      videoRef.current.currentTime = time;
+      setCurrentTime(time);
+    }
+  }, []);
+  const handleTranscriptUpdate = useCallback(
+    (updated: TranscriptionResult) => {
+      setResult((previous) =>
+        previous ? { ...previous, ...updated } : updated,
+      );
     },
-    {
-      label: "Audio",
-      active: status === "extracting",
-      complete: status === "transcribing" || isTranscribingBanner,
+    [setResult],
+  );
+  const showTranscript = useCallback(() => setEditorTab("subtitles"), []);
+  useEffect(
+    () => () => {
+      silenceDetectionRunIdRef.current += 1;
+      silenceDetectionAbortRef.current?.abort();
     },
-    {
-      label: "Words",
-      active: status === "transcribing",
-      complete: isTranscribingBanner,
-    },
-  ];
+    [],
+  );
 
   return (
-    <main className="flex flex-col relative bg-background h-dvh overflow-hidden lg:h-auto lg:min-h-screen lg:overflow-auto">
-      {/* Header */}
-      <header className="w-full border-b-2 border-black/10 bg-background">
-        <div className="container mx-auto flex flex-wrap items-center justify-between gap-2 px-4 py-2 md:px-6 lg:flex-nowrap lg:py-3">
-          <div className="flex min-w-0 items-center gap-2 lg:gap-3">
-            <Button
-              variant="default"
-              size="icon-sm"
-              className="shrink-0 bg-foreground text-sm font-bold tracking-tight text-primary-foreground lg:cursor-default"
-              onClick={() => setShowAboutSheet(true)}
-            >
-              BS
+    <main className={styles.editor} data-editing={result !== null}>
+      {!isPreparingTranscription ? (
+        <h1 className="sr-only">Based Subtitles video editor</h1>
+      ) : null}
+      <header className={styles.header}>
+        <button
+          type="button"
+          className={styles.brand}
+          onClick={() => setShowAboutSheet(true)}
+          aria-label="About Based Subtitles"
+        >
+          <span className={styles.brandMark}>BS</span>
+          <span>basedsubtitles</span>
+        </button>
+        <span className={styles.projectName} title={uploadedFile?.name}>
+          {uploadedFile?.name || "Untitled Project"}
+        </span>
+        <div className={styles.headerActions}>
+          <span className={styles.localBadge}>
+            <span />
+            100% Local
+          </span>
+          {isProcessing ? (
+            <Button variant="outline" onClick={cancelTranscription}>
+              Cancel
             </Button>
-            <div className="min-w-0 text-left">
-              <h1
-                className="truncate text-sm font-bold leading-tight text-foreground lg:text-lg"
-                style={{ fontFamily: "var(--font-outfit), sans-serif" }}
-              >
-                Based Subtitles
-              </h1>
-              <p
-                className="text-xs text-muted-foreground hidden lg:block"
-                style={{ fontFamily: "var(--font-outfit), sans-serif" }}
-              >
-                100% local &middot; powered by transformers.js
-              </p>
-            </div>
-          </div>
-          <div className="flex min-w-0 basis-full flex-col items-stretch gap-2 sm:basis-auto sm:flex-row sm:items-center">
-            {uploadedFile && !result && !isProcessing && (
+          ) : result ? (
+            <>
               <Button
-                onClick={() => setShowLanguageModal(true)}
-                className="flex items-center justify-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground shadow-sm hover:bg-primary/80"
-                style={{ fontFamily: "var(--font-outfit), sans-serif" }}
+                variant="outline"
+                aria-label="New video"
+                onClick={() => setShowResetConfirm(true)}
+                disabled={isDownloadProcessing}
               >
-                <Video className="w-4 h-4" />
-                Transcribe Video
+                <Upload />
+                <span>New video</span>
               </Button>
-            )}
-            {isProcessing && (
-              <div
-                className="flex min-w-0 max-w-full items-center gap-2 overflow-hidden rounded-lg border border-border bg-muted/60 px-2.5 py-1.5"
-                role="status"
-                aria-live="polite"
+              <Button
+                onClick={downloadVideo}
+                disabled={
+                  isDownloadProcessing ||
+                  isBgModelLoading ||
+                  isBgProcessing ||
+                  isDetectingSilence
+                }
+                title={
+                  isBgModelLoading || isBgProcessing
+                    ? "Wait for the person effect to finish."
+                    : undefined
+                }
               >
-                <Loader2 className="h-4 w-4 animate-spin text-primary shrink-0" />
-                <span
-                  className="min-w-0 truncate text-xs sm:text-sm text-muted-foreground font-medium"
-                  style={{ fontFamily: "var(--font-outfit), sans-serif" }}
-                >
-                  {isTranscribingBanner ? (
-                    <>
-                      Transcribing
-                      {latestTranscribedTime !== null
-                        ? ` ${formatTime(latestTranscribedTime)}`
-                        : ""}{" "}
-                      - {visibleProgress}%
-                    </>
-                  ) : (
-                    <>
-                      {statusMessage} - {visibleProgress}%
-                    </>
-                  )}{" "}
-                  <span
-                    className={
-                      device === "webgpu"
-                        ? "text-green-600"
-                        : "text-muted-foreground"
-                    }
-                  >
-                    ({deviceLabel})
-                  </span>
-                </span>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={cancelTranscription}
-                  className="h-8 shrink-0 px-2.5 sm:px-3"
-                  style={{ fontFamily: "var(--font-outfit), sans-serif" }}
-                >
-                  Cancel
-                </Button>
-              </div>
-            )}
-            {result && status === "ready" && (
-              <>
-                {/* Mobile: compact upload button */}
-                <Button
-                  onClick={() => setShowResetConfirm(true)}
-                  variant="outline"
-                  size="sm"
-                  className="lg:hidden flex items-center gap-1.5 text-xs"
-                  style={{ fontFamily: "var(--font-outfit), sans-serif" }}
-                >
-                  <Upload className="w-3.5 h-3.5" />
-                  New
-                </Button>
-                {/* Desktop: full buttons */}
-                <div className="hidden lg:flex gap-2">
-                  <Button
-                    onClick={handleChangeLanguage}
-                    variant="outline"
-                    className="flex items-center gap-2 px-4 py-2 rounded-lg border-border text-foreground text-sm font-semibold hover:bg-muted"
-                    style={{ fontFamily: "var(--font-outfit), sans-serif" }}
-                  >
-                    <RefreshCw className="w-4 h-4" />
-                    Regenerate Subs
-                  </Button>
-                  <Button
-                    onClick={() => setShowResetConfirm(true)}
-                    className="flex items-center gap-2 px-4 py-2 rounded-lg bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/80 shadow-sm"
-                    style={{ fontFamily: "var(--font-outfit), sans-serif" }}
-                  >
-                    <Upload className="w-4 h-4" />
-                    Upload New
-                  </Button>
-                </div>
-              </>
-            )}
-          </div>
+                <Download />
+                {isDownloadProcessing ? "Exporting…" : "Export"}
+              </Button>
+            </>
+          ) : (
+            <Button variant="outline" onClick={() => setShowResetConfirm(true)}>
+              Cancel
+            </Button>
+          )}
         </div>
       </header>
-
-      {/* App Section */}
-      <section className="flex-1 min-h-0 flex flex-col lg:block lg:min-h-auto w-full py-0 lg:py-4">
-        <div className="flex-1 min-h-0 flex flex-col lg:block mx-auto px-1 lg:px-4 md:px-6 w-full">
-          <div className="flex-1 min-h-0 flex flex-col lg:block w-full mx-auto space-y-1 lg:space-y-4 p-1 lg:p-4 md:p-6 rounded-none lg:rounded-2xl border-0 lg:border lg:border-border bg-background lg:shadow-sm">
-            {!result && (
-              <>
-                <div className="text-center">
-                  <p
-                    className="text-muted-foreground text-sm"
-                    style={{ fontFamily: "var(--font-outfit), sans-serif" }}
-                  >
-                    Upload a video (MP4 or WebM) to generate subtitles
-                  </p>
-                </div>
-                <Alert>
-                  <Video className="h-4 w-4 text-muted-foreground" />
-                  <AlertDescription
-                    style={{ fontFamily: "var(--font-outfit), sans-serif" }}
-                  >
-                    Supported formats: MP4 and WebM. Maximum video length: 5
-                    minutes.
-                  </AlertDescription>
-                </Alert>
-              </>
-            )}
-
-            {error && (
-              <Alert variant="destructive">
-                <AlertDescription>{error}</AlertDescription>
-              </Alert>
-            )}
-
-            {/* Language selection modal */}
-            {showLanguageModal && (
-              <LanguageSelectionModal
-                open={showLanguageModal}
-                onClose={handleModalClose}
-                onConfirm={handleLanguageConfirm}
-                defaultLanguage={language}
-                defaultModelSize={modelSize}
-              />
-            )}
-
-            {/* Mobile inline tabs — Styling / Edit below download */}
-
-            <div className="flex-1 min-h-0 flex flex-col lg:flex-row lg:items-start gap-0 lg:gap-6">
-              {/* Subtitle Styling Column - Hidden on mobile, shown on desktop */}
-              {result && (
-                <div className="hidden lg:block w-full lg:w-96">
-                  <div className="rounded-2xl h-[calc(100vh-11rem-20px)] overflow-y-auto w-full border border-border bg-background p-2 shadow-lg">
-                    <div className="p-2 space-y-4">
-                      <SubtitleStyling
-                        style={subtitleStyle}
-                        onChange={setSubtitleStyle}
-                        mode={mode}
-                        onModeChange={handleModeChange}
-                        bgRemovalReady={bgRemovalReady}
-                        ratio={ratio}
-                      />
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {/* Video Column */}
-              <div className="flex-1 min-h-0 flex flex-col">
-                {/* Mobile: controls bar above video */}
-                {result && (
-                  <div
-                    className="lg:hidden flex items-center justify-between gap-2 px-1 py-1.5"
-                    style={{ fontFamily: "var(--font-outfit), sans-serif" }}
-                  >
-                    <div className="flex items-center gap-1.5">
-                      <Tabs value={ratio} onValueChange={handleRatioChange}>
-                        <TabsList className="grid w-auto grid-cols-2 h-auto">
-                          <TabsTrigger
-                            value="16:9"
-                            className="px-2 py-1"
-                            title="Landscape (16:9)"
-                          >
-                            <RectangleHorizontal className="h-4 w-4" />
-                          </TabsTrigger>
-                          <TabsTrigger
-                            value="9:16"
-                            className="px-2 py-1"
-                            title="Portrait (9:16)"
-                          >
-                            <RectangleVertical className="h-4 w-4" />
-                          </TabsTrigger>
-                        </TabsList>
-                      </Tabs>
-                      {ratio === "9:16" && (
-                        <Button
-                          variant={zoomPortrait ? "default" : "outline"}
-                          size="icon-xs"
-                          onClick={() =>
-                            handleZoomPortraitChange(!zoomPortrait)
-                          }
-                        >
-                          {zoomPortrait ? (
-                            <ZoomIn className="h-3.5 w-3.5" />
-                          ) : (
-                            <ZoomOut className="h-3.5 w-3.5" />
-                          )}
-                        </Button>
-                      )}
-                      {ratio === "9:16" && isVideoLandscape && (
-                        <Button
-                          variant={faceTrackingEnabled ? "default" : "outline"}
-                          size="icon-xs"
-                          onClick={() => {
-                            setFaceTrackingEnabled((prev) => {
-                              if (prev)
-                                setSubtitleStyle((s) => ({
-                                  ...s,
-                                  splitSubtitleMode: "none",
-                                }));
-                              return !prev;
-                            });
-                          }}
-                        >
-                          <ScanFace className="h-3.5 w-3.5" />
-                        </Button>
-                      )}
-                    </div>
-                    <div className="flex items-center gap-1.5">
-                      {!bgRemovalReady &&
-                        !isBgModelLoading &&
-                        !isBgProcessing && (
-                          <Button
-                            variant="outline"
-                            size="xs"
-                            onClick={handleRemoveBackground}
-                            className="text-[11px]"
-                          >
-                            <Eraser className="h-3 w-3" />
-                            Remove BG
-                          </Button>
-                        )}
-                      {(isBgModelLoading || isBgProcessing) && (
-                        <Button
-                          variant="destructive"
-                          size="xs"
-                          onClick={handleCancelBgRemoval}
-                          className="text-[11px]"
-                        >
-                          <Loader2 className="h-3 w-3 animate-spin" />
-                          {Math.round(bgProgress)}% · Cancel
-                        </Button>
-                      )}
-                      {bgRemovalReady && (
-                        <Button
-                          variant={
-                            subtitleStyle.backgroundRemovalEnabled
-                              ? "default"
-                              : "outline"
-                          }
-                          size="xs"
-                          onClick={() =>
-                            setSubtitleStyle((prev) => ({
-                              ...prev,
-                              backgroundRemovalEnabled:
-                                !prev.backgroundRemovalEnabled,
-                            }))
-                          }
-                          className="text-[11px]"
-                        >
-                          <Eraser className="h-3 w-3" />
-                          {subtitleStyle.backgroundRemovalEnabled
-                            ? "BG On"
-                            : "BG Off"}
-                        </Button>
-                      )}
-                      {status === "ready" && (
-                        <Button
-                          variant="outline"
-                          size="xs"
-                          onClick={handleChangeLanguage}
-                          className="text-[11px]"
-                        >
-                          <RefreshCw className="h-3 w-3" />
-                          Resub
-                        </Button>
-                      )}
-                    </div>
-                  </div>
-                )}
-                {/* Slim bg-removal progress bar — mobile */}
-                {(isBgModelLoading || isBgProcessing) && (
-                  <div className="lg:hidden w-full h-1 bg-muted overflow-hidden shrink-0">
-                    <div
-                      className="h-full bg-primary transition-all duration-300"
-                      style={{
-                        width: `${Math.max(0, Math.min(100, bgProgress))}%`,
-                      }}
-                    />
-                  </div>
-                )}
-                {/* Video Upload Component */}
-                <div className="relative bg-black lg:bg-transparent rounded-lg lg:rounded-none overflow-hidden shrink-0">
-                  <VideoUpload
-                    key={uploadKey}
-                    className="w-full"
-                    onVideoSelect={handleVideoSelect}
-                    onAspectRatioDetected={handleAspectRatioDetected}
-                    onDurationChange={setVideoDuration}
-                    ref={videoRef}
-                    onTimeUpdate={handleTimeUpdate}
-                    transcript={result}
-                    currentTime={currentTime}
-                    subtitleStyle={subtitleStyle}
-                    mode={mode}
-                    ratio={ratio}
-                    zoomPortrait={zoomPortrait}
-                    initialFile={initialFile}
-                    bgRemovalReady={bgRemovalReady}
-                    getMaskAtTime={getMaskAtTime}
-                    getCenterX={getCenterX}
-                    isFaceTrackingActive={isFaceTrackingActive}
-                    silenceRemovalRanges={
-                      silenceRemovalLevel === "off" ? [] : silenceRemovedRanges
-                    }
-                    autoZoomEnabled={autoZoomEnabled}
-                  />
-                  {isPreparingTranscription && (
-                    <div
-                      className="absolute inset-x-2 top-2 z-40 sm:inset-x-4 sm:top-4"
-                      role="status"
-                      aria-live="polite"
-                    >
-                      <div className="rounded-lg border border-white/15 bg-black/85 text-white shadow-xl backdrop-blur-md">
-                        <div className="flex items-start gap-3 p-3 sm:p-4">
-                          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-white/10">
-                            <Loader2 className="h-5 w-5 animate-spin text-white" />
-                          </div>
-                          <div
-                            className="min-w-0 flex-1"
-                            style={{
-                              fontFamily: "var(--font-outfit), sans-serif",
-                            }}
-                          >
-                            <div className="flex items-center justify-between gap-3">
-                              <p className="truncate text-sm font-semibold leading-tight">
-                                {statusMessage}
-                              </p>
-                              <span className="shrink-0 text-xs font-semibold tabular-nums text-white/80">
-                                {visibleProgress}%
-                              </span>
-                            </div>
-                            <p className="mt-1 text-xs leading-snug text-white/70">
-                              {PRE_TRANSCRIPTION_DETAILS[status]}
-                            </p>
-                            <div
-                              className="mt-3 h-1.5 overflow-hidden rounded-full bg-white/15"
-                              role="progressbar"
-                              aria-valuemin={0}
-                              aria-valuemax={100}
-                              aria-valuenow={visibleProgress}
-                            >
-                              <div
-                                className="h-full rounded-full bg-primary transition-all duration-500"
-                                style={{ width: `${visibleProgress}%` }}
-                              />
-                            </div>
-                            <div className="mt-3 grid grid-cols-3 gap-1.5 text-[10px] font-semibold uppercase text-white/45">
-                              {preparationSteps.map((step) => (
-                                <div
-                                  key={step.label}
-                                  className={`rounded-md px-2 py-1 text-center transition-colors ${
-                                    step.complete
-                                      ? "bg-primary text-primary-foreground"
-                                      : step.active
-                                        ? "bg-white/15 text-white"
-                                        : "bg-white/5"
-                                  }`}
-                                >
-                                  {step.label}
-                                </div>
-                              ))}
-                            </div>
-                          </div>
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            onClick={cancelTranscription}
-                            className="hidden shrink-0 border-white/25 bg-white/10 text-white hover:bg-white/20 hover:text-white sm:inline-flex"
-                            style={{
-                              fontFamily: "var(--font-outfit), sans-serif",
-                            }}
-                          >
-                            Cancel
-                          </Button>
-                        </div>
-                      </div>
-                    </div>
-                  )}
-                  {/* Desktop: full overlay popover on video */}
-                  {selectedWordInfo && selectedWordTimestamp && (
-                    <WordStylePopover
-                      key={`desktop-${selectedWordTimestamp[0]}-${selectedWordTimestamp[1]}`}
-                      wordText={selectedWordInfo.text}
-                      override={selectedWordInfo.override}
-                      onChange={handleWordStyleChange}
-                      onReset={handleWordStyleReset}
-                      onClose={handleWordStyleClose}
-                      className="hidden lg:block absolute z-50 top-2 right-2"
-                    />
-                  )}
-                  {/* Mobile: compact overlay popover on video */}
-                  {selectedWordInfo && selectedWordTimestamp && (
-                    <WordStylePopover
-                      key={`mobile-${selectedWordTimestamp[0]}-${selectedWordTimestamp[1]}`}
-                      wordText={selectedWordInfo.text}
-                      override={selectedWordInfo.override}
-                      onChange={handleWordStyleChange}
-                      onReset={handleWordStyleReset}
-                      onClose={handleWordStyleClose}
-                      className="lg:hidden absolute z-50 top-2 left-2 right-2"
-                      compact
-                    />
-                  )}
-                </div>
-
-                {/* Word chip bar for per-word editing in phrase mode */}
-                {mode === "phrase" && (
-                  <div className="mt-2 flex flex-wrap items-center justify-center gap-1.5 px-2 min-h-[28px]">
-                    {currentPhraseWords.length > 0 && (
-                      <>
-                        <span className="text-xs text-muted-foreground mr-1 font-medium">
-                          Edit word:
-                        </span>
-                        {currentPhraseWords.map((word, i) => {
-                          const isSelected =
-                            selectedWordTimestamp &&
-                            word.timestamp[0] === selectedWordTimestamp[0] &&
-                            word.timestamp[1] === selectedWordTimestamp[1];
-                          const hasOverride = result?.chunks.find(
-                            (c) =>
-                              c.timestamp[0] === word.timestamp[0] &&
-                              c.timestamp[1] === word.timestamp[1],
-                          )?.styleOverride;
-                          return (
-                            <Button
-                              key={`${word.timestamp[0]}-${i}`}
-                              size="xs"
-                              variant={
-                                isSelected
-                                  ? "default"
-                                  : hasOverride
-                                    ? "outline"
-                                    : "default"
-                              }
-                              onClick={() => handleWordSelect(word.timestamp)}
-                              className={
-                                isSelected
-                                  ? "bg-amber-500 text-white border-amber-500 shadow-sm hover:bg-amber-600"
-                                  : hasOverride
-                                    ? "bg-amber-100 border-amber-400 text-amber-900 hover:bg-amber-200"
-                                    : ""
-                              }
-                            >
-                              {word.text}
-                            </Button>
-                          );
-                        })}
-                      </>
-                    )}
-                  </div>
-                )}
-
-                {result && (
-                  <div className="mt-2 lg:mt-3 flex flex-col items-center gap-2 lg:gap-3 shrink-0">
-                    {/* Aspect Ratio + Zoom Controls — desktop only (mobile is overlaid on video) */}
-                    <div className="hidden lg:flex items-center gap-3">
-                      <Tabs value={ratio} onValueChange={handleRatioChange}>
-                        <TabsList className="grid w-auto grid-cols-2">
-                          <TabsTrigger
-                            value="16:9"
-                            className="gap-1.5 px-4"
-                            title="Landscape (16:9)"
-                          >
-                            <RectangleHorizontal className="h-4 w-4" />
-                            Landscape
-                          </TabsTrigger>
-                          <TabsTrigger
-                            value="9:16"
-                            className="gap-1.5 px-4"
-                            title="Portrait (9:16)"
-                          >
-                            <RectangleVertical className="h-4 w-4" />
-                            Portrait
-                          </TabsTrigger>
-                        </TabsList>
-                      </Tabs>
-                      {ratio === "9:16" && (
-                        <Button
-                          variant={zoomPortrait ? "default" : "outline"}
-                          size="sm"
-                          onClick={() =>
-                            handleZoomPortraitChange(!zoomPortrait)
-                          }
-                          className="flex items-center gap-2"
-                        >
-                          {zoomPortrait ? (
-                            <ZoomIn className="h-4 w-4" />
-                          ) : (
-                            <ZoomOut className="h-4 w-4" />
-                          )}
-                          {zoomPortrait ? "Zoom" : "Fit"}
-                        </Button>
-                      )}
-                    </div>
-                    <div className="hidden lg:flex">
-                      {ratio === "9:16" && isVideoLandscape && (
-                        <Button
-                          variant={faceTrackingEnabled ? "default" : "outline"}
-                          size="sm"
-                          onClick={() => {
-                            setFaceTrackingEnabled((prev) => {
-                              if (prev) {
-                                setSubtitleStyle((s) => ({
-                                  ...s,
-                                  splitSubtitleMode: "none",
-                                }));
-                              }
-                              return !prev;
-                            });
-                          }}
-                          className="flex items-center gap-2"
-                        >
-                          <ScanFace className="h-4 w-4" />
-                          {faceTrackingEnabled
-                            ? "Person tracking on"
-                            : "Person tracking off"}
-                        </Button>
-                      )}
-                    </div>
-
-                    {/* Background Removal — desktop only */}
-                    <div className="hidden lg:flex flex-col items-center gap-3">
-                      {!bgRemovalReady && (
-                        <Button
-                          onClick={handleRemoveBackground}
-                          variant="outline"
-                          size="sm"
-                          disabled={isBgModelLoading || isBgProcessing}
-                          className="flex items-center gap-2"
-                        >
-                          <Eraser className="h-4 w-4" />
-                          {isBgModelLoading
-                            ? "Loading model..."
-                            : isBgProcessing
-                              ? "Processing..."
-                              : "Remove Background"}
-                        </Button>
-                      )}
-                      {bgRemovalReady &&
-                        subtitleStyle.backgroundRemovalEnabled && (
-                          <Button
-                            onClick={() => {
-                              setSubtitleStyle((prev) => ({
-                                ...prev,
-                                backgroundRemovalEnabled: false,
-                              }));
-                            }}
-                            variant="outline"
-                            size="sm"
-                            className="flex items-center gap-2"
-                          >
-                            <Eraser className="h-4 w-4" />
-                            Disable Background Removal
-                          </Button>
-                        )}
-                      {bgRemovalReady &&
-                        !subtitleStyle.backgroundRemovalEnabled && (
-                          <Button
-                            onClick={() => {
-                              setSubtitleStyle((prev) => ({
-                                ...prev,
-                                backgroundRemovalEnabled: true,
-                              }));
-                            }}
-                            variant="outline"
-                            size="sm"
-                            className="flex items-center gap-2"
-                          >
-                            <Eraser className="h-4 w-4" />
-                            Enable Background Removal
-                          </Button>
-                        )}
-                    </div>
-                    {(isBgModelLoading || isBgProcessing) && (
-                      <div className="w-full max-w-md space-y-1">
-                        <div
-                          className="flex justify-between text-xs text-muted-foreground"
-                          style={{
-                            fontFamily: "var(--font-outfit), sans-serif",
-                          }}
-                        >
-                          <span>
-                            {isBgModelLoading
-                              ? "Loading model..."
-                              : "Processing frames..."}
-                          </span>
-                          <span>{Math.round(bgProgress)}%</span>
-                        </div>
-                        <div className="w-full bg-muted rounded-full h-1.5 overflow-hidden">
-                          <div
-                            className="bg-amber-500 h-1.5 rounded-full transition-all duration-300"
-                            style={{
-                              width: `${Math.max(0, Math.min(100, bgProgress))}%`,
-                            }}
-                          />
-                        </div>
-                      </div>
-                    )}
-
-                    {isLongVideo && !isDownloadProcessing && (
-                      <div
-                        className="w-full max-w-md rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 space-y-1"
-                        style={{ fontFamily: "var(--font-outfit), sans-serif" }}
-                      >
-                        <p className="font-semibold">Long video detected</p>
-                        <p className="text-amber-700 leading-snug">
-                          Encoding in the browser can take a very long time for
-                          videos over 30 minutes. Consider exporting subtitles
-                          as <strong>SRT</strong> from the transcript panel and
-                          using a desktop app (e.g. HandBrake, VLC) to burn them
-                          in, or watch the video in any media player that
-                          supports .srt files.
-                        </p>
-                      </div>
-                    )}
-                    <div
-                      className="flex w-full max-w-md items-center justify-between gap-2 rounded-lg border border-border/60 bg-muted/40 px-3 py-2"
-                      style={{ fontFamily: "var(--font-outfit), sans-serif" }}
-                    >
-                      <div className="flex min-w-0 items-center gap-2">
-                        {isDetectingSilence ? (
-                          <Loader2 className="h-4 w-4 shrink-0 animate-spin text-primary" />
-                        ) : (
-                          <AudioLines className="h-4 w-4 shrink-0 text-muted-foreground" />
-                        )}
-                        <div className="min-w-0">
-                          <p className="truncate text-sm font-semibold">
-                            Silence removal
-                          </p>
-                          <p className="text-xs text-muted-foreground">
-                            {silenceRemovalLevel === "off"
-                              ? "Off"
-                              : isDetectingSilence
-                                ? "Detecting quiet sections..."
-                                : `${silenceRemovedRanges.length} removed${silenceDurationLabel ? ` - ${silenceDurationLabel}` : ""}`}
-                          </p>
-                        </div>
-                      </div>
-                      <Select
-                        value={silenceRemovalLevel}
-                        disabled={isDetectingSilence || isDownloadProcessing}
-                        onValueChange={handleSilenceRemovalLevelChange}
-                      >
-                        <SelectTrigger className="h-9 w-[170px] rounded-lg border-border bg-background text-xs font-semibold">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent align="end">
-                          <SelectItem value="off">Off</SelectItem>
-                          <SelectItem value="aggressive">
-                            {SILENCE_REMOVAL_LEVELS.aggressive.label}
-                          </SelectItem>
-                          <SelectItem value="default">
-                            {SILENCE_REMOVAL_LEVELS.default.label}
-                          </SelectItem>
-                          <SelectItem value="conservative">
-                            {SILENCE_REMOVAL_LEVELS.conservative.label}
-                          </SelectItem>
-                        </SelectContent>
-                      </Select>
-                    </div>
-                    <Button
-                      type="button"
-                      variant={autoZoomEnabled ? "default" : "outline"}
-                      size="sm"
-                      onClick={() => setAutoZoomEnabled((value) => !value)}
-                      className="flex w-full max-w-md items-center justify-center gap-2 rounded-lg font-semibold"
-                      style={{ fontFamily: "var(--font-outfit), sans-serif" }}
-                    >
-                      <Clapperboard className="h-4 w-4" />
-                      {autoZoomEnabled
-                        ? "Auto zoom cuts on"
-                        : "Auto zoom cuts off"}
-                    </Button>
-                    <div
-                      className="flex items-center gap-2 w-full max-w-md"
-                      style={{ fontFamily: "var(--font-outfit), sans-serif" }}
-                    >
-                      <Button
-                        onClick={downloadVideo}
-                        className="flex-1 flex items-center justify-center gap-2 rounded-lg bg-primary text-primary-foreground font-semibold hover:bg-primary/80 shadow-sm"
-                        disabled={isDownloadProcessing}
-                      >
-                        <Download className="w-4 h-4" />
-                        {isDownloadProcessing
-                          ? "Processing..."
-                          : "Download Video"}
-                      </Button>
-                      <div className="flex shrink-0" data-slot="button-group">
-                        {(["medium", "high"] as const).map((q) => (
-                          <Button
-                            key={q}
-                            variant={
-                              exportQuality === q ? "default" : "outline"
-                            }
-                            size="xs"
-                            onClick={() => setExportQuality(q)}
-                            disabled={isDownloadProcessing}
-                            className="text-xs font-semibold"
-                          >
-                            {q === "medium" ? "MD" : "HQ"}
-                          </Button>
-                        ))}
-                      </div>
-                    </div>
-
-                    {isDownloadProcessing && (
-                      <div className="w-full max-w-md space-y-2">
-                        <div
-                          className="flex justify-between text-xs text-muted-foreground"
-                          style={{
-                            fontFamily: "var(--font-outfit), sans-serif",
-                          }}
-                        >
-                          <span>{downloadStatus}</span>
-                          <span>{Math.round(downloadProgress)}%</span>
-                        </div>
-                        <div className="w-full bg-muted rounded-full h-2 overflow-hidden">
-                          <div
-                            className="bg-sky-500 h-2 rounded-full transition-all duration-300"
-                            style={{
-                              width: `${Math.max(0, Math.min(100, downloadProgress))}%`,
-                            }}
-                          />
-                        </div>
-                        {/* FOR DEBUGGING PURPOSES ONLY */}
-                        {/* {exportDiagnostics && (
-                          <div
-                            className="hidden lg:block rounded-lg border border-border bg-muted px-3 py-2 text-[11px] text-muted-foreground space-y-1"
-                            style={{
-                              fontFamily: "var(--font-outfit), sans-serif",
-                            }}
-                          >
-                            <div className="font-semibold text-foreground">
-                              Export diagnostics
-                            </div>
-                            <div>
-                              Codec:{" "}
-                              {exportDiagnostics.resolvedCodecString ??
-                                exportDiagnostics.encoderCodec ??
-                                exportDiagnostics.requestedCodec ??
-                                "pending"}
-                            </div>
-                            <div>
-                              MIME: {exportDiagnostics.mimeType ?? "pending"}
-                            </div>
-                            <div>
-                              Source:{" "}
-                              {exportDiagnostics.sourceCodec ?? "unknown"} /{" "}
-                              {exportDiagnostics.sourceIsHevc
-                                ? "HEVC"
-                                : "non-HEVC"}{" "}
-                              /{" "}
-                              {exportDiagnostics.sourceCanDecode === undefined
-                                ? "decode unknown"
-                                : exportDiagnostics.sourceCanDecode
-                                  ? "decodable"
-                                  : "not decodable"}
-                            </div>
-                            <div>
-                              Output: {exportDiagnostics.width}×
-                              {exportDiagnostics.height} @{" "}
-                              {exportDiagnostics.frameRate}fps
-                            </div>
-                            <div>
-                              Bitrate: {String(exportDiagnostics.bitrate)}
-                            </div>
-                            <div>
-                              Mode: {exportDiagnostics.format} /{" "}
-                              {exportDiagnostics.quality} /{" "}
-                              {exportDiagnostics.ratio} /{" "}
-                              {exportDiagnostics.isMobile
-                                ? "mobile"
-                                : "desktop"}
-                            </div>
-                            {(exportDiagnostics.bitrateMode ??
-                              exportDiagnostics.latencyMode) && (
-                              <div>
-                                Encoder:{" "}
-                                {[
-                                  exportDiagnostics.bitrateMode,
-                                  exportDiagnostics.latencyMode,
-                                ]
-                                  .filter(Boolean)
-                                  .join(" / ")}
-                              </div>
-                            )}
-                          </div>
-                        )} */}
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          className="w-full rounded-lg border-border text-foreground font-semibold"
-                          style={{
-                            fontFamily: "var(--font-outfit), sans-serif",
-                          }}
-                          onClick={cancelDownload}
-                        >
-                          Stop download
-                        </Button>
-                      </div>
-                    )}
-                  </div>
-                )}
-
-                {/* Mobile: inline Styling / Edit tabs — fills remaining viewport */}
-                {result && (
-                  <div className="lg:hidden flex-1 min-h-0 flex flex-col mt-2">
-                    <div className="flex items-center gap-1 shrink-0 px-1">
-                      <Tabs
-                        value={mobileTab}
-                        onValueChange={(v) =>
-                          setMobileTab(v as "styling" | "edit")
-                        }
-                        className="flex-1"
-                      >
-                        <TabsList className="grid w-full grid-cols-2 h-9 bg-primary/10">
-                          <TabsTrigger
-                            value="styling"
-                            className="data-[state=active]:bg-primary data-[state=active]:text-primary-foreground font-semibold text-sm"
-                          >
-                            <Settings className="h-3.5 w-3.5 mr-1.5" />
-                            Styling
-                          </TabsTrigger>
-                          <TabsTrigger
-                            value="edit"
-                            className="data-[state=active]:bg-primary data-[state=active]:text-primary-foreground font-semibold text-sm"
-                          >
-                            <FileText className="h-3.5 w-3.5 mr-1.5" />
-                            Edit
-                          </TabsTrigger>
-                        </TabsList>
-                      </Tabs>
-                      <Button
-                        variant="outline"
-                        size="icon-xs"
-                        onClick={() => setShowExpandedSheet(true)}
-                        title="Expand"
-                        className="shrink-0"
-                      >
-                        <Maximize2 className="h-3.5 w-3.5" />
-                      </Button>
-                    </div>
-                    <div className="flex-1 min-h-0 relative mt-1">
-                      {/* Top shadow — visible when scrolled down */}
-                      <div
-                        className="absolute top-0 left-0 right-0 h-3 bg-gradient-to-b from-black/10 to-transparent pointer-events-none z-10 opacity-0 transition-opacity"
-                        id="mobile-scroll-top-shadow"
-                      />
-                      <div
-                        className="h-full overflow-y-auto overscroll-contain"
-                        onScroll={(e) => {
-                          const el = e.currentTarget;
-                          const topShadow = document.getElementById(
-                            "mobile-scroll-top-shadow",
-                          );
-                          const bottomShadow = document.getElementById(
-                            "mobile-scroll-bottom-shadow",
-                          );
-                          if (topShadow)
-                            topShadow.style.opacity =
-                              el.scrollTop > 4 ? "1" : "0";
-                          if (bottomShadow)
-                            bottomShadow.style.opacity =
-                              el.scrollHeight - el.scrollTop - el.clientHeight >
-                              4
-                                ? "1"
-                                : "0";
-                        }}
-                      >
-                        {mobileTab === "styling" && (
-                          <SubtitleStyling
-                            style={subtitleStyle}
-                            onChange={setSubtitleStyle}
-                            mode={mode}
-                            onModeChange={handleModeChange}
-                            bgRemovalReady={bgRemovalReady}
-                            ratio={ratio}
-                          />
-                        )}
-                        {mobileTab === "edit" && (
-                          <TranscriptSidebar
-                            transcript={result}
-                            currentTime={currentTime}
-                            setCurrentTime={(time) => {
-                              if (videoRef.current) {
-                                videoRef.current.currentTime = time;
-                                setCurrentTime(time);
-                              }
-                            }}
-                            onTranscriptUpdate={(updatedTranscript) => {
-                              setResult((prev) =>
-                                prev
-                                  ? { ...prev, ...updatedTranscript }
-                                  : updatedTranscript,
-                              );
-                            }}
-                            mode={mode}
-                            maxWordsPerLine={subtitleStyle.maxWordsPerLine}
-                            dynamicEnabled={subtitleStyle.dynamicEnabled}
-                            videoFileName={uploadedFile?.name}
-                          />
-                        )}
-                      </div>
-                      {/* Bottom shadow — visible when more content below */}
-                      <div
-                        className="absolute bottom-0 left-0 right-0 h-3 bg-gradient-to-t from-black/10 to-transparent pointer-events-none z-10 transition-opacity"
-                        id="mobile-scroll-bottom-shadow"
-                      />
-                    </div>
-                  </div>
-                )}
-              </div>
-
-              {/* Transcript Sidebar - Hidden on mobile, shown on desktop */}
-              {result && (
-                <div className="hidden lg:flex lg:flex-col w-full lg:w-96 h-[calc(100vh-11rem-20px)]">
-                  <div
-                    className={`flex-1 min-h-0 flex flex-col w-full border border-border bg-background shadow-lg ${isTranscribingBanner || result?.generationTime ? "rounded-t-2xl" : "rounded-2xl"}`}
-                  >
-                    <div className="px-4 pt-4 pb-3 border-b border-border shrink-0">
-                      <h4
-                        className="text-base font-semibold text-foreground"
-                        style={{ fontFamily: "var(--font-outfit), sans-serif" }}
-                      >
-                        Edit Transcript
-                      </h4>
-                      <p
-                        className="text-xs text-muted-foreground mt-0.5"
-                        style={{ fontFamily: "var(--font-outfit), sans-serif" }}
-                      >
-                        Click on any segment to edit the text
-                      </p>
-                    </div>
-                    <TranscriptSidebar
-                      className="flex-1 min-h-0"
-                      transcript={result}
-                      currentTime={currentTime}
-                      setCurrentTime={(time) => {
-                        if (videoRef.current) {
-                          videoRef.current.currentTime = time;
-                          setCurrentTime(time);
-                        }
-                      }}
-                      onTranscriptUpdate={(updatedTranscript) => {
-                        setResult((prev) =>
-                          prev
-                            ? { ...prev, ...updatedTranscript }
-                            : updatedTranscript,
-                        );
-                      }}
-                      mode={mode}
-                      maxWordsPerLine={subtitleStyle.maxWordsPerLine}
-                      dynamicEnabled={subtitleStyle.dynamicEnabled}
-                      videoFileName={uploadedFile?.name}
-                    />
-                  </div>
-                  {(isTranscribingBanner || result?.generationTime) && (
-                    <div className="rounded-b-2xl border border-t-0 border-amber-200 bg-amber-50 shadow-lg px-4 py-3 flex flex-col gap-2 shrink-0">
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-2">
-                          {isTranscribingBanner ? (
-                            <Loader2 className="h-4 w-4 animate-spin text-amber-600 shrink-0" />
-                          ) : (
-                            <CheckCircle2 className="h-4 w-4 text-green-500 shrink-0" />
-                          )}
-                          <span
-                            className="text-sm text-amber-800 font-semibold"
-                            style={{
-                              fontFamily: "var(--font-outfit), sans-serif",
-                            }}
-                          >
-                            {isTranscribingBanner ? (
-                              <>
-                                Transcribing
-                                {latestTranscribedTime !== null
-                                  ? ` ${formatTime(latestTranscribedTime)}`
-                                  : ""}{" "}
-                                - {visibleProgress}%
-                              </>
-                            ) : (
-                              <>
-                                Done in{" "}
-                                {(() => {
-                                  const s = Math.round(
-                                    (result.generationTime ?? 0) / 1000,
-                                  );
-                                  const m = Math.floor(s / 60);
-                                  return m > 0 ? `${m}m ${s % 60}s` : `${s}s`;
-                                })()}
-                              </>
-                            )}
-                          </span>
-                        </div>
-                        <span
-                          className={`text-xs font-medium ${device === "webgpu" ? "text-green-600" : "text-muted-foreground"}`}
-                          style={{
-                            fontFamily: "var(--font-outfit), sans-serif",
-                          }}
-                        >
-                          {deviceLabel}
-                        </span>
-                      </div>
-                      {isTranscribingBanner && (
-                        <div
-                          className="w-full bg-amber-100 rounded-full h-1.5 overflow-hidden"
-                          role="progressbar"
-                          aria-valuemin={0}
-                          aria-valuemax={100}
-                          aria-valuenow={visibleProgress}
-                        >
-                          <div
-                            className="bg-amber-500 h-1.5 rounded-full transition-all duration-500"
-                            style={{ width: `${visibleProgress}%` }}
-                          />
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-      </section>
-
-      {/* Expanded settings/edit sheet — mobile */}
-      {result && (
-        <Sheet open={showExpandedSheet} onOpenChange={setShowExpandedSheet}>
-          <SheetContent
-            side="bottom"
-            className="lg:hidden max-h-[85dvh] rounded-t-2xl p-0 gap-0 overflow-hidden"
-          >
-            <div className="flex items-center gap-2 px-4 pt-3 pb-2 border-b shrink-0">
-              <Tabs
-                value={mobileTab}
-                onValueChange={(v) => setMobileTab(v as "styling" | "edit")}
-                className="flex-1"
+      {error ? (
+        <Alert
+          variant="destructive"
+          className="mx-auto my-3 w-[calc(100%-2rem)]"
+        >
+          <AlertDescription>{error}</AlertDescription>
+        </Alert>
+      ) : null}
+      {!isDownloadProcessing && downloadStatus.startsWith("Error:") ? (
+        <Alert
+          variant="destructive"
+          className="mx-auto my-3 w-[calc(100%-2rem)]"
+        >
+          <AlertDescription>{downloadStatus}</AlertDescription>
+        </Alert>
+      ) : null}
+      {showLanguageModal ? (
+        <LanguageSelectionModal
+          open={showLanguageModal}
+          onClose={handleModalClose}
+          onConfirm={handleLanguageConfirm}
+          defaultLanguage={language}
+          defaultModelSize={modelSize}
+        />
+      ) : null}
+      {isPreparingTranscription ? (
+        <TranscriptionProgress
+          status={status}
+          progress={visibleProgress}
+          modelLoading={modelLoading}
+          device={device}
+        />
+      ) : null}
+      <div
+        className={`${styles.workspace} ${!result ? styles.emptyWorkspace : ""}`}
+        hidden={isPreparingTranscription}
+      >
+        {result ? (
+          <>
+            <nav className={styles.rail} aria-label="Editor tools">
+              <button
+                type="button"
+                data-active={editorTab === "style"}
+                aria-pressed={editorTab === "style"}
+                onClick={() => setEditorTab("style")}
               >
-                <TabsList className="grid w-full grid-cols-2">
-                  <TabsTrigger value="styling">
-                    <Settings className="h-3.5 w-3.5 mr-1.5" />
-                    Styling
-                  </TabsTrigger>
-                  <TabsTrigger value="edit">
-                    <FileText className="h-3.5 w-3.5 mr-1.5" />
-                    Edit
-                  </TabsTrigger>
-                </TabsList>
-              </Tabs>
-            </div>
-            <SheetTitle className="sr-only">
-              {mobileTab === "styling" ? "Subtitle Styling" : "Edit Transcript"}
-            </SheetTitle>
-            <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain p-4">
-              {mobileTab === "styling" && (
+                <SlidersHorizontal />
+                <span>Style</span>
+              </button>
+              <button
+                type="button"
+                data-active={editorTab === "subtitles"}
+                aria-pressed={editorTab === "subtitles"}
+                onClick={() => setEditorTab("subtitles")}
+              >
+                <Captions />
+                <span>Subtitles</span>
+              </button>
+              <button
+                type="button"
+                data-active={editorTab === "video"}
+                aria-pressed={editorTab === "video"}
+                onClick={() => setEditorTab("video")}
+              >
+                <Video />
+                <span>Video</span>
+              </button>
+              <button
+                type="button"
+                className={styles.aboutButton}
+                aria-label="About"
+                onClick={() => setShowAboutSheet(true)}
+              >
+                <Info />
+                <span>About</span>
+              </button>
+            </nav>
+            <aside
+              className={styles.sidebar}
+              data-expanded={panelExpanded}
+              aria-label={
+                editorTab === "style"
+                  ? "Subtitle style"
+                  : editorTab === "subtitles"
+                    ? "Edit subtitles"
+                    : "Video settings"
+              }
+            >
+              <div className={styles.panelTools}>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => setPanelExpanded((value) => !value)}
+                  aria-label={
+                    panelExpanded
+                      ? "Collapse editor panel"
+                      : "Expand editor panel"
+                  }
+                >
+                  {panelExpanded ? <Minimize2 /> : <Maximize2 />}
+                  {panelExpanded ? "Collapse" : "Expand"}
+                </Button>
+              </div>
+              {editorTab === "style" ? (
                 <SubtitleStyling
                   style={subtitleStyle}
                   onChange={setSubtitleStyle}
                   mode={mode}
                   onModeChange={handleModeChange}
-                  bgRemovalReady={bgRemovalReady}
-                  ratio={ratio}
+                  personEffects={
+                    <PersonSubtitleControls
+                      placement={subtitleStyle.splitSubtitleMode}
+                      onPlacementChange={(placement) =>
+                        setSubtitleStyle((previous) => ({
+                          ...previous,
+                          splitSubtitleMode: placement,
+                        }))
+                      }
+                      portrait={ratio === "9:16"}
+                      depthEnabled={subtitleStyle.dynamicEnabled}
+                      onDepthChange={(enabled) => {
+                        if (enabled) handlePersonEffect("depth");
+                        else
+                          setSubtitleStyle((previous) => ({
+                            ...previous,
+                            dynamicEnabled: false,
+                          }));
+                      }}
+                      modelLoading={isBgModelLoading}
+                      processing={isBgProcessing}
+                      progress={bgProgress}
+                      onCancel={handleCancelBgRemoval}
+                      disabled={isDownloadProcessing}
+                    />
+                  }
                 />
-              )}
-              {mobileTab === "edit" && (
-                <TranscriptSidebar
-                  transcript={result}
-                  currentTime={currentTime}
-                  setCurrentTime={(time) => {
-                    if (videoRef.current) {
-                      videoRef.current.currentTime = time;
-                      setCurrentTime(time);
+              ) : null}
+              {editorTab === "subtitles" ? (
+                <>
+                  <TranscriptSidebar
+                    className={styles.transcriptPanel}
+                    transcript={result}
+                    currentTime={currentTime}
+                    setCurrentTime={handleSeek}
+                    onTranscriptUpdate={handleTranscriptUpdate}
+                    mode={mode}
+                    maxWordsPerLine={subtitleStyle.maxWordsPerLine}
+                    dynamicEnabled={subtitleStyle.dynamicEnabled}
+                    videoFileName={uploadedFile?.name}
+                  />
+                  {result.generationTime ? (
+                    <p className={styles.panelFootnote}>
+                      Generated in {Math.round(result.generationTime / 1000)}s ·{" "}
+                      {deviceLabel}
+                    </p>
+                  ) : null}
+                </>
+              ) : null}
+              {editorTab === "video" ? (
+                <div className={styles.videoSettings}>
+                  <div className={styles.panelHeading}>
+                    <h2>Video settings</h2>
+                    <p>Frame your video and refine the pace.</p>
+                  </div>
+                  <div className={styles.settingGroup}>
+                    <label htmlFor="video-ratio">Aspect ratio</label>
+                    <Select value={ratio} onValueChange={handleRatioChange}>
+                      <SelectTrigger id="video-ratio">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="16:9">Landscape · 16:9</SelectItem>
+                        <SelectItem value="9:16">Portrait · 9:16</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  {ratio === "9:16" ? (
+                    <Button
+                      variant={zoomPortrait ? "default" : "outline"}
+                      onClick={() => handleZoomPortraitChange(!zoomPortrait)}
+                    >
+                      <ZoomIn />
+                      {zoomPortrait ? "Zoom to fill" : "Fit video"}
+                    </Button>
+                  ) : null}
+                  <VideoEffectsControls
+                    trackingEnabled={faceTrackingEnabled}
+                    canTrackPerson={ratio === "9:16" && isVideoLandscape}
+                    onTrackingChange={setFaceTrackingEnabled}
+                    backgroundEnabled={subtitleStyle.backgroundRemovalEnabled}
+                    backgroundReady={bgRemovalReady}
+                    backgroundType={subtitleStyle.backgroundType}
+                    backgroundColor={subtitleStyle.solidBackgroundColor}
+                    onBackgroundTypeChange={(backgroundType) =>
+                      setSubtitleStyle((previous) => ({
+                        ...previous,
+                        backgroundType,
+                      }))
                     }
-                  }}
-                  onTranscriptUpdate={(updatedTranscript) => {
-                    setResult((prev) =>
-                      prev
-                        ? { ...prev, ...updatedTranscript }
-                        : updatedTranscript,
-                    );
-                  }}
-                  mode={mode}
-                  maxWordsPerLine={subtitleStyle.maxWordsPerLine}
-                  dynamicEnabled={subtitleStyle.dynamicEnabled}
-                  videoFileName={uploadedFile?.name}
+                    onBackgroundColorChange={(solidBackgroundColor) =>
+                      setSubtitleStyle((previous) => ({
+                        ...previous,
+                        solidBackgroundColor,
+                      }))
+                    }
+                    modelLoading={isBgModelLoading}
+                    processing={isBgProcessing}
+                    progress={bgProgress}
+                    disabled={isDownloadProcessing}
+                    onRemoveBackground={() => handlePersonEffect("background")}
+                    onToggleBackground={() =>
+                      setSubtitleStyle((previous) => ({
+                        ...previous,
+                        dynamicEnabled: false,
+                        backgroundRemovalEnabled:
+                          !previous.backgroundRemovalEnabled,
+                      }))
+                    }
+                    onCancelBackground={handleCancelBgRemoval}
+                  />
+                  <div className={styles.settingGroup}>
+                    <label htmlFor="silence-removal">Silence removal</label>
+                    <p role="status" aria-live="polite">
+                      {isDetectingSilence
+                        ? "Finding quiet sections… Changes apply when this finishes."
+                        : silenceRemovalLevel === "off"
+                          ? "Off — play and export the original pauses."
+                          : silenceRemovedRanges.length === 0
+                            ? "No matching pauses found. The video is unchanged."
+                            : `Active in preview and export · ${silenceRemovedRanges.length} cuts · ${silenceDurationLabel}`}
+                    </p>
+                    {silenceRemovalLevel !== "off" &&
+                    !isDetectingSilence &&
+                    silenceRemovedRanges.length > 0 ? (
+                      <p>
+                        The playhead skips the cut sections. Timeline times
+                        refer to the original video.
+                      </p>
+                    ) : null}
+                    <Select
+                      value={silenceRemovalLevel}
+                      onValueChange={handleSilenceRemovalLevelChange}
+                      disabled={isDetectingSilence || isDownloadProcessing}
+                    >
+                      <SelectTrigger id="silence-removal">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="off">Off</SelectItem>
+                        <SelectItem value="aggressive">
+                          {SILENCE_REMOVAL_LEVELS.aggressive.label}
+                        </SelectItem>
+                        <SelectItem value="default">
+                          {SILENCE_REMOVAL_LEVELS.default.label}
+                        </SelectItem>
+                        <SelectItem value="conservative">
+                          {SILENCE_REMOVAL_LEVELS.conservative.label}
+                        </SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <Button
+                    variant={autoZoomEnabled ? "default" : "outline"}
+                    onClick={() => setAutoZoomEnabled((value) => !value)}
+                  >
+                    <Clapperboard />
+                    Auto zoom cuts {autoZoomEnabled ? "on" : "off"}
+                  </Button>
+                  <div className={styles.settingGroup}>
+                    <label htmlFor="export-quality">Export quality</label>
+                    {videoDuration > 30 * 60 ? (
+                      <p>
+                        Long videos can take time to export. You can also
+                        download SRT from the Subtitles panel and use a desktop
+                        video app.
+                      </p>
+                    ) : null}
+                    <Select
+                      value={exportQuality}
+                      onValueChange={(value) =>
+                        setExportQuality(value as "medium" | "high")
+                      }
+                      disabled={isDownloadProcessing}
+                    >
+                      <SelectTrigger id="export-quality">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="medium">
+                          Standard · smaller file
+                        </SelectItem>
+                        <SelectItem value="high">
+                          High quality · larger file
+                        </SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <Button
+                    variant="outline"
+                    onClick={handleChangeLanguage}
+                    disabled={isProcessing || isDownloadProcessing}
+                  >
+                    <RefreshCw />
+                    Regenerate subtitles
+                  </Button>
+                </div>
+              ) : null}
+            </aside>
+          </>
+        ) : null}
+        <div className={styles.canvasColumn}>
+          <section
+            className={styles.preview}
+            data-ratio={ratio}
+            aria-label="Video preview"
+          >
+            {result ? (
+              <div className={styles.previewToolbar}>
+                <div>
+                  <Button
+                    variant="outline"
+                    onClick={() => handleZoomPortraitChange(!zoomPortrait)}
+                    disabled={ratio !== "9:16"}
+                    aria-label={
+                      zoomPortrait ? "Fit video in frame" : "Zoom video to fill"
+                    }
+                  >
+                    {zoomPortrait ? <ZoomIn /> : <ZoomOut />}
+                    {zoomPortrait ? "Zoom" : "Fit"}
+                  </Button>
+                  <Select value={ratio} onValueChange={handleRatioChange}>
+                    <SelectTrigger
+                      aria-label="Preview aspect ratio"
+                      className="w-28 bg-white"
+                    >
+                      {ratio === "9:16" ? (
+                        <RectangleVertical size={16} />
+                      ) : (
+                        <RectangleHorizontal size={16} />
+                      )}
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="16:9">16:9</SelectItem>
+                      <SelectItem value="9:16">9:16</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+            ) : null}
+            <div className={styles.videoStage}>
+              <VideoUpload
+                key={uploadKey}
+                className={styles.videoUpload}
+                onVideoSelect={handleVideoSelect}
+                onAspectRatioDetected={handleAspectRatioDetected}
+                onDurationChange={setVideoDuration}
+                ref={videoRef}
+                onTimeUpdate={handleTimeUpdate}
+                transcript={result}
+                currentTime={currentTime}
+                subtitleStyle={subtitleStyle}
+                mode={mode}
+                ratio={ratio}
+                zoomPortrait={zoomPortrait}
+                initialFile={initialFile}
+                bgRemovalReady={bgRemovalReady}
+                getMaskAtTime={getMaskAtTime}
+                getCenterX={getCenterX}
+                isFaceTrackingActive={isFaceTrackingActive}
+                cropTrackingEnabled={
+                  faceTrackingEnabled && ratio === "9:16" && isVideoLandscape
+                }
+                silenceRemovalRanges={
+                  silenceRemovalLevel === "off" ? [] : silenceRemovedRanges
+                }
+                autoZoomEnabled={autoZoomEnabled}
+              />
+              {selectedWordInfo && selectedWordTimestamp ? (
+                <WordStylePopover
+                  key={`${selectedWordTimestamp[0]}-${selectedWordTimestamp[1]}`}
+                  wordText={selectedWordInfo.text}
+                  override={selectedWordInfo.override}
+                  onChange={handleWordStyleChange}
+                  onReset={handleWordStyleReset}
+                  onClose={handleWordStyleClose}
+                  className={styles.wordPopover}
                 />
-              )}
+              ) : null}
             </div>
-          </SheetContent>
-        </Sheet>
-      )}
-
-      {/* Confirm: background removal on long video */}
+            {result ? (
+              <div className={styles.wordChips}>
+                {mode === "phrase" && currentPhraseWords.length > 0 ? (
+                  <span>Edit word</span>
+                ) : null}
+                {(mode === "phrase" ? currentPhraseWords : []).map(
+                  (word, index) => (
+                    <Button
+                      key={`${word.timestamp[0]}-${index}`}
+                      size="xs"
+                      variant="outline"
+                      data-selected={
+                        selectedWordTimestamp?.[0] === word.timestamp[0] &&
+                        selectedWordTimestamp?.[1] === word.timestamp[1]
+                      }
+                      onClick={() => handleWordSelect(word.timestamp)}
+                    >
+                      {word.text}
+                    </Button>
+                  ),
+                )}
+              </div>
+            ) : null}
+            {isTranscribingBanner ? (
+              <div className={styles.transcribingBanner} role="status">
+                <Loader2 size={16} className="animate-spin" />
+                {statusMessage}{" "}
+                {latestTranscribedTime !== null
+                  ? formatTime(latestTranscribedTime)
+                  : ""}{" "}
+                · {visibleProgress}%
+              </div>
+            ) : null}
+          </section>
+          {!result && !isProcessing ? (
+            <div
+              className={styles.emptyPrompt}
+              role={notice ? "status" : undefined}
+            >
+              <h2>
+                {notice ? "No audio detected" : "Your video. Your words."}
+              </h2>
+              <p>
+                {notice?.replace(/^No audio detected\. /, "") ??
+                  "Choose the spoken language to start. All video processing stays on this device."}
+              </p>
+              <Button
+                onClick={() =>
+                  notice ? handleResetVideo() : setShowLanguageModal(true)
+                }
+              >
+                {notice ? "Choose another video" : "Generate subtitles"}
+              </Button>
+            </div>
+          ) : null}
+          {result ? (
+            <>
+              <EditorTimeline
+                videoRef={videoRef}
+                transcript={result}
+                duration={videoDuration}
+                fileName={uploadedFile?.name}
+                maxWordsPerLine={subtitleStyle.maxWordsPerLine}
+                onSeek={handleSeek}
+                onEdit={showTranscript}
+              />
+              <div className={styles.editorBottom}>
+                <span>
+                  <LockKeyhole size={13} /> Your original video stays unchanged.
+                </span>
+                <div>
+                  <Button
+                    variant="outline"
+                    onClick={handleChangeLanguage}
+                    disabled={isProcessing || isDownloadProcessing}
+                  >
+                    <RefreshCw />
+                    Generate subtitles
+                  </Button>
+                  <Button
+                    className={styles.exportButton}
+                    onClick={downloadVideo}
+                    disabled={
+                      isProcessing ||
+                      isDownloadProcessing ||
+                      isBgModelLoading ||
+                      isBgProcessing ||
+                      isDetectingSilence
+                    }
+                    title={
+                      isBgModelLoading || isBgProcessing
+                        ? "Wait for the person effect to finish."
+                        : undefined
+                    }
+                  >
+                    <Download />
+                    {isDownloadProcessing ? "Exporting video…" : "Export Video"}
+                  </Button>
+                </div>
+              </div>
+              {isDownloadProcessing ? (
+                <div className={styles.exportProgress} role="status">
+                  <div>
+                    <strong>{downloadStatus}</strong>
+                    <span>{Math.round(downloadProgress)}%</span>
+                  </div>
+                  <progress
+                    value={downloadProgress}
+                    max={100}
+                    aria-label="Video export progress"
+                  />
+                  <Button variant="outline" onClick={cancelDownload}>
+                    Stop export
+                  </Button>
+                </div>
+              ) : null}
+            </>
+          ) : null}
+        </div>
+      </div>
       <AlertDialog open={showBgConfirm} onOpenChange={setShowBgConfirm}>
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>Long video</AlertDialogTitle>
             <AlertDialogDescription>
               This video is {Math.round(videoDuration / 60)} minutes long.
-              Background removal can take a while on longer videos. Do you want
-              to proceed?
+              Background removal can take some time.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction onClick={() => startBgRemoval()}>
-              Proceed
+            <AlertDialogAction
+              onClick={() => startBgRemoval(pendingPersonEffectRef.current)}
+            >
+              Continue
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-
-      {/* Confirm: upload new / reset */}
       <AlertDialog open={showResetConfirm} onOpenChange={setShowResetConfirm}>
         <AlertDialogContent>
           <AlertDialogHeader>
@@ -1800,95 +1305,64 @@ export function MainApp({
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-
-      {/* About Sheet — mobile */}
       <Sheet open={showAboutSheet} onOpenChange={setShowAboutSheet}>
-        <SheetContent side="bottom" className="lg:hidden rounded-t-2xl">
-          <SheetHeader className="pb-2">
-            <SheetTitle
-              style={{ fontFamily: "var(--font-outfit), sans-serif" }}
-            >
-              Based Subtitles
-            </SheetTitle>
-            <SheetDescription
-              style={{ fontFamily: "var(--font-outfit), sans-serif" }}
-            >
-              100% local subtitle generation powered by transformers.js
+        <SheetContent side="right" className="rounded-l-2xl">
+          <SheetHeader>
+            <SheetTitle>Based Subtitles</SheetTitle>
+            <SheetDescription>
+              Video subtitles, made on your device.
             </SheetDescription>
           </SheetHeader>
-          <div
-            className="px-4 pb-6 space-y-3"
-            style={{ fontFamily: "var(--font-outfit), sans-serif" }}
-          >
-            <div className="flex items-center gap-3 flex-wrap">
-              <span className="text-xs font-bold uppercase tracking-widest text-muted-foreground">
-                Built by
-              </span>
+          <div className={styles.aboutContent}>
+            <p>
+              Built by{" "}
               <a
                 href="https://x.com/deifosv"
-                className="text-xs font-bold uppercase tracking-widest text-foreground hover:underline"
                 target="_blank"
                 rel="noopener noreferrer"
               >
                 Vlad
               </a>
-              <span className="text-muted-foreground/40">&middot;</span>
-              <a
-                href="/changelog"
-                className="text-xs font-bold uppercase tracking-widest text-muted-foreground hover:text-foreground"
-              >
-                v{APP_VERSION}
-              </a>
-              <span className="text-muted-foreground/40">&middot;</span>
-              <a
-                href="https://github.com/deifos/basedsubtitles"
-                className="text-xs font-bold uppercase tracking-widest text-muted-foreground hover:text-foreground"
-                target="_blank"
-                rel="noopener noreferrer"
-              >
-                GitHub
-              </a>
-            </div>
-            <div className="flex items-center gap-3 flex-wrap">
-              <span className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground">
-                Powered by
-              </span>
-              <a
-                href="https://huggingface.co/docs/transformers.js"
-                className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground hover:text-foreground"
-                target="_blank"
-                rel="noopener noreferrer"
-              >
-                Transformers.js
-              </a>
-              <span className="text-muted-foreground/40">&middot;</span>
-              <a
-                href="https://github.com/Vanilagy/mediabunny"
-                className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground hover:text-foreground"
-                target="_blank"
-                rel="noopener noreferrer"
-              >
-                MediaBunny
-              </a>
-            </div>
+            </p>
+            <a href="/changelog">What is new · v{APP_VERSION}</a>
             <a
-              href="https://getbasedapps.com"
-              className="inline-flex items-center gap-1.5 px-2.5 py-1 border-2 border-foreground bg-foreground text-background text-[10px] font-bold uppercase tracking-wider hover:bg-background hover:text-foreground transition-colors"
+              href="https://github.com/deifos/basedsubtitles"
               target="_blank"
               rel="noopener noreferrer"
             >
-              getbasedapps
+              Open source on GitHub
+            </a>
+            <a
+              href="https://huggingface.co/docs/transformers.js"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              Transformers.js
+            </a>
+            <a
+              href="https://github.com/Vanilagy/mediabunny"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              MediaBunny
+            </a>
+            <a
+              href="https://www.buymeacoffee.com/vladships"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              Buy me a coffee
+            </a>
+            <a
+              href="https://getbasedapps.com"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              More from getbasedapps
             </a>
           </div>
         </SheetContent>
       </Sheet>
-
-      <div className="hidden lg:block">
-        <SiteFooter />
-      </div>
-      <div className={result ? "hidden lg:block" : ""}>
-        <BuyMeCoffee />
-      </div>
     </main>
   );
 }

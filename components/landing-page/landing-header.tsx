@@ -1,40 +1,34 @@
-"use client";
+import { ArrowRight } from "lucide-react";
+import { GitHubIcon } from "@/components/icons/github-icon";
+import { LandingBrand } from "./landing-visuals";
+import styles from "./landing.module.css";
 
-import type { JSX } from "react";
-import Link from "next/link";
-
-export function LandingHeader(): JSX.Element {
+export function LandingHeader() {
   return (
-    <header className="relative z-10">
-      <div className="mx-auto max-w-7xl px-6">
-        <div className="flex items-center justify-between py-5">
-          <Link href="#" className="inline-flex items-center gap-2.5 group">
-            <span className="inline-flex h-8 w-8 items-center justify-center rounded-lg bg-foreground text-sm font-bold tracking-tight text-background transition-transform group-hover:scale-105">
-              BS
-            </span>
-            <span
-              className="text-sm font-semibold tracking-tight text-foreground"
-              style={{ fontFamily: "var(--font-outfit), sans-serif" }}
-            >
-              basedsubtitles
-            </span>
-          </Link>
-          <div className="flex items-center gap-2">
-            <span className="hidden sm:inline-flex items-center gap-1.5 rounded-full bg-emerald-50 px-3 py-1 text-xs font-medium text-emerald-700 ring-1 ring-emerald-200/60">
-              <span className="relative flex h-1.5 w-1.5">
-                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
-                <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-emerald-500" />
-              </span>
-              100% Local
-            </span>
-            <a
-              href="#dropzone"
-              className="inline-flex items-center rounded-lg bg-primary px-4 py-2 text-xs font-semibold text-primary-foreground transition-all hover:bg-primary/80 hover:shadow-lg"
-              style={{ fontFamily: "var(--font-outfit), sans-serif" }}
-            >
-              Get Started
-            </a>
-          </div>
+    <header className={styles.header}>
+      <div className={`${styles.container} ${styles.headerInner}`}>
+        <a href="#" aria-label="Based Subtitles home">
+          <LandingBrand />
+        </a>
+        <nav className={styles.navigation} aria-label="Main navigation">
+          <a href="#features">Features</a>
+          <a href="#how-it-works">How it works</a>
+          <a href="#local">Privacy</a>
+          <a href="#examples">Examples</a>
+        </nav>
+        <div className={styles.headerActions}>
+          <a
+            href="https://github.com/deifos/basedsubtitles"
+            target="_blank"
+            rel="noopener noreferrer"
+            className={styles.sourceLink}
+          >
+            <GitHubIcon width={18} height={18} />
+            <span>Open source</span>
+          </a>
+          <a href="#dropzone" className={styles.primaryButton}>
+            Get started <ArrowRight size={16} />
+          </a>
         </div>
       </div>
     </header>

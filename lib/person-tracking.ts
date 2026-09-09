@@ -52,7 +52,9 @@ export function smoothCenterX(
 }
 
 /**
- * EMA forward pass on a full timeline. Returns a new smoothed timeline.
+ * EMA forward pass on a full timeline. Alpha applies to 100 ms of video time.
+ * Using elapsed time prevents sparse export samples from adding seconds of lag.
+ * Returns a new smoothed timeline.
  */
 export function smoothTimeline(
   timeline: PositionTimeline,
@@ -63,9 +65,15 @@ export function smoothTimeline(
     { time: timeline[0].time, centerX: timeline[0].centerX },
   ];
   for (let i = 1; i < timeline.length; i++) {
+    const elapsed = Math.max(0, timeline[i].time - timeline[i - 1].time);
+    const timeAdjustedAlpha = 1 - Math.pow(1 - alpha, elapsed / 0.1);
     result.push({
       time: timeline[i].time,
-      centerX: smoothCenterX(result[i - 1].centerX, timeline[i].centerX, alpha),
+      centerX: smoothCenterX(
+        result[i - 1].centerX,
+        timeline[i].centerX,
+        timeAdjustedAlpha,
+      ),
     });
   }
   return result;
@@ -79,8 +87,11 @@ export function computeCropX(
   centerX: number,
   srcW: number,
   cropW: number,
+  trackingEnabled: boolean = true,
 ): number {
-  const pixelCenter = centerX * srcW;
+  // Face positions may still be used by subtitles or auto zoom when the user
+  // turns crop tracking off. Those features must not move the base crop.
+  const pixelCenter = (trackingEnabled ? centerX : 0.5) * srcW;
   const x = Math.round(pixelCenter - cropW / 2);
   return Math.max(0, Math.min(x, srcW - cropW));
 }

@@ -1,3 +1,8 @@
+import {
+  adjustTranscriptChunksForSilenceRemoval,
+  createSilenceRemovalPlan,
+} from "./silence-removal";
+
 /**
  * Format seconds into a readable time format (MM:SS)
  */
@@ -5,6 +10,22 @@ export function formatTime(seconds: number): string {
   const minutes = Math.floor(seconds / 60);
   const remainingSeconds = Math.floor(seconds % 60);
   return `${minutes}:${remainingSeconds.toString().padStart(2, "0")}`;
+}
+
+/** Merge preview cuts without changing subtitle timestamps used for editing. */
+export function mergeTimestampRanges(
+  ranges: ReadonlyArray<readonly [number, number]>,
+): Array<[number, number]> {
+  const sorted = ranges
+    .map(([start, end]): [number, number] => [start, end])
+    .sort((a, b) => a[0] - b[0]);
+  const merged: Array<[number, number]> = [];
+  for (const range of sorted) {
+    const previous = merged[merged.length - 1];
+    if (!previous || previous[1] < range[0]) merged.push(range);
+    else previous[1] = Math.max(previous[1], range[1]);
+  }
+  return merged;
 }
 
 /**
@@ -63,6 +84,8 @@ export interface ProcessedChunk {
   timestamp: [number, number];
   disabled?: boolean;
   subtitleHidden?: boolean;
+  dynamicPosition?: "behind" | "front";
+  styleOverride?: WordStyleOverride;
   words?: ProcessedWord[];
 }
 
@@ -142,6 +165,8 @@ function _processTranscriptChunks(
       timestamp: chunk.timestamp,
       disabled: chunk.disabled,
       subtitleHidden: chunk.subtitleHidden,
+      dynamicPosition: chunk.dynamicPosition,
+      styleOverride: chunk.styleOverride,
     }));
   }
 
@@ -153,6 +178,7 @@ function _processTranscriptChunks(
     start: number;
     end: number;
     disabled: boolean;
+    subtitleHidden: boolean;
   } | null;
 
   let currentGroup: PhraseAccumulator = null;
@@ -181,6 +207,7 @@ function _processTranscriptChunks(
       text: currentGroup.texts.join(" "),
       timestamp: [currentGroup.start, currentGroup.end],
       disabled: currentGroup.disabled,
+      subtitleHidden: currentGroup.subtitleHidden,
       words: currentGroup.words,
     });
 
@@ -196,6 +223,7 @@ function _processTranscriptChunks(
     }
 
     const chunkDisabled = Boolean(chunk.disabled);
+    const chunkHidden = Boolean(chunk.subtitleHidden);
     const wordData: ProcessedWord = {
       text: trimmedText,
       timestamp: [start, end],
@@ -212,6 +240,7 @@ function _processTranscriptChunks(
         start,
         end,
         disabled: chunkDisabled,
+        subtitleHidden: chunkHidden,
       };
       return;
     }
@@ -220,6 +249,7 @@ function _processTranscriptChunks(
     const wouldExceedWordLimit = currentGroup.texts.length >= MAX_PHRASE_WORDS;
     const wouldExceedDuration = end - currentGroup.start > MAX_PHRASE_DURATION;
     const crossesDisabledBoundary = chunkDisabled !== currentGroup.disabled;
+    const crossesHiddenBoundary = chunkHidden !== currentGroup.subtitleHidden;
     const endsWithPunctuation = /[.!?]$/.test(
       currentGroup.texts[currentGroup.texts.length - 1],
     );
@@ -229,6 +259,7 @@ function _processTranscriptChunks(
 
     const shouldEndPhrase =
       crossesDisabledBoundary ||
+      crossesHiddenBoundary ||
       timeSinceLastWord > MAX_GAP ||
       wouldExceedWordLimit ||
       wouldExceedDuration ||
@@ -243,6 +274,7 @@ function _processTranscriptChunks(
         start,
         end,
         disabled: chunkDisabled,
+        subtitleHidden: chunkHidden,
       };
     } else {
       currentGroup.texts.push(trimmedText);
@@ -263,16 +295,37 @@ function _processTranscriptChunks(
 /**
  * Convert transcript data to SRT format
  */
+function getSubtitleFileChunks(
+  transcript: SourceTranscript,
+  mode: "word" | "phrase",
+): ProcessedChunk[] {
+  const disabledRanges = transcript.chunks
+    .filter((chunk) => chunk.disabled)
+    .map((chunk) => ({
+      startTime: chunk.timestamp[0],
+      endTime: chunk.timestamp[1],
+    }));
+  const duration = transcript.chunks.reduce(
+    (end, chunk) => Math.max(end, chunk.timestamp[1]),
+    0,
+  );
+  const chunks =
+    disabledRanges.length > 0
+      ? adjustTranscriptChunksForSilenceRemoval(
+          transcript.chunks,
+          createSilenceRemovalPlan(duration, disabledRanges),
+        )
+      : transcript.chunks;
+  return processTranscriptChunks({ chunks }, mode).filter(
+    (chunk) => !chunk.disabled && !chunk.subtitleHidden && chunk.text.trim(),
+  );
+}
+
 export function transcriptToSrt(
-  transcript: {
-    chunks: Array<{
-      text: string;
-      timestamp: [number, number];
-    }>;
-  },
+  transcript: SourceTranscript,
   mode: "word" | "phrase" = "word",
 ): string {
-  const processedChunks = processTranscriptChunks(transcript, mode);
+  const processedChunks = getSubtitleFileChunks(transcript, mode);
   return processedChunks
     .map((chunk, index) => {
       const [start, end] = chunk.timestamp;
@@ -287,16 +340,11 @@ export function transcriptToSrt(
  * Convert transcript data to WebVTT format
  */
 export function transcriptToVtt(
-  transcript: {
-    chunks: Array<{
-      text: string;
-      timestamp: [number, number];
-    }>;
-  },
+  transcript: SourceTranscript,
   mode: "word" | "phrase" = "word",
 ): string {
   const header = "WEBVTT\n\n";
-  const processedChunks = processTranscriptChunks(transcript, mode);
+  const processedChunks = getSubtitleFileChunks(transcript, mode);
   const cues = processedChunks
     .map((chunk, index) => {
       const [start, end] = chunk.timestamp;

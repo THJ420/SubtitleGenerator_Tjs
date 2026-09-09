@@ -1,6 +1,12 @@
 import { useState, useRef, useEffect, useCallback } from "react";
-import { extractAudioFromVideo } from "@/lib/audio-utils";
+import { extractAudioFromVideo, NoAudioDetectedError } from "@/lib/audio-utils";
 import type { WordStyleOverride } from "@/lib/transcript-utils";
+import { getModelLoadingErrorMessage } from "@/lib/transcription-errors";
+import {
+  clampProgressPercent,
+  type ModelLoadingState,
+} from "@/lib/transcription-progress";
+export type { ModelLoadingState } from "@/lib/transcription-progress";
 
 type DeviceType = "webgpu" | "wasm";
 export type ModelSize = "tiny" | "base" | "small";
@@ -37,15 +43,6 @@ export const STATUS_MESSAGES: Record<TranscriptionStatus, string> = {
   ready: "Ready",
 };
 
-function normalizeProgressValue(progressValue: number): number {
-  const percent =
-    progressValue > 0 && progressValue <= 1
-      ? progressValue * 100
-      : progressValue;
-
-  return Math.max(0, Math.min(100, Math.round(percent)));
-}
-
 async function detectPreferredDevice(): Promise<DeviceType> {
   if (
     typeof navigator === "undefined" ||
@@ -67,9 +64,13 @@ async function detectPreferredDevice(): Promise<DeviceType> {
 export function useTranscription() {
   const [status, setStatusState] = useState<TranscriptionStatus>("idle");
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const [result, setResult] = useState<TranscriptionResult | null>(null);
   const [liveText, setLiveText] = useState<string>("");
   const [progress, setProgress] = useState(0);
+  const [modelLoading, setModelLoading] = useState<ModelLoadingState | null>(
+    null,
+  );
   const [device, setDevice] = useState<DeviceType>("wasm");
   const worker = useRef<Worker | null>(null);
   const deviceRef = useRef<DeviceType>("wasm");
@@ -82,6 +83,8 @@ export function useTranscription() {
   const activeLoadIdRef = useRef(0);
   const statusRef = useRef<TranscriptionStatus>("idle");
   const transcribingRef = useRef(false);
+  const operationIdRef = useRef(0);
+  const audioControllerRef = useRef<AbortController | null>(null);
 
   const updateStatus = useCallback((nextStatus: TranscriptionStatus) => {
     statusRef.current = nextStatus;
@@ -106,11 +109,17 @@ export function useTranscription() {
 
   const workerMessageHandler = useCallback(
     function handleWorkerMessage(e: MessageEvent) {
+      if (e.currentTarget !== worker.current) return;
       switch (e.data.status) {
-        case "loading":
+        case "model-loading":
           updateStatus("loading");
           modelReadyRef.current = false;
-          setProgress((prev) => Math.max(prev, 10));
+          setModelLoading(e.data.loading);
+          if (e.data.device === "webgpu" || e.data.device === "wasm") {
+            setDevice(e.data.device);
+            deviceRef.current = e.data.device;
+          }
+          setProgress(0);
           break;
 
         case "fallback":
@@ -119,7 +128,8 @@ export function useTranscription() {
           modelReadyRef.current = false;
           setError(null);
           updateStatus("loading");
-          setProgress((prev) => Math.max(prev, 10));
+          setModelLoading(null);
+          setProgress(0);
           break;
 
         case "transcribing":
@@ -128,17 +138,16 @@ export function useTranscription() {
             deviceRef.current = e.data.device;
           }
           updateStatus("transcribing");
-          setProgress((prev) => Math.max(prev, 60));
+          setProgress(0);
           break;
 
-        case "ready":
+        case "model-ready":
           // Only resolve if this "ready" matches the most recent load request
           if (activeLoadIdRef.current === loadIdRef.current) {
             modelReadyRef.current = true;
             if (statusRef.current === "loading" && !transcribingRef.current) {
               updateStatus("ready");
             }
-            setProgress((prev) => Math.max(prev, 50));
             if (modelLoadResolveRef.current) {
               modelLoadResolveRef.current();
             }
@@ -157,7 +166,7 @@ export function useTranscription() {
             setLiveText(e.data.text);
           }
           if (typeof e.data.progress === "number") {
-            const nextProgress = normalizeProgressValue(e.data.progress);
+            const nextProgress = clampProgressPercent(e.data.progress);
             setProgress((prev) => Math.max(prev, nextProgress));
           }
           break;
@@ -172,6 +181,7 @@ export function useTranscription() {
           setResult(resultWithTime);
           updateStatus("ready");
           setProgress(100);
+          setModelLoading(null);
           transcribingRef.current = false;
 
           // Terminate worker to free model memory (~800MB-1.2GB for Whisper)
@@ -192,6 +202,7 @@ export function useTranscription() {
           setError(e.data.data);
           updateStatus("idle");
           setProgress(0);
+          setModelLoading(null);
           transcribingRef.current = false;
           modelReadyRef.current = false;
           if (modelLoadRejectRef.current) {
@@ -200,20 +211,6 @@ export function useTranscription() {
           modelLoadingPromiseRef.current = null;
           modelLoadResolveRef.current = null;
           modelLoadRejectRef.current = null;
-          break;
-
-        case "progress":
-        case "initiate":
-        case "download":
-        case "done":
-          if (typeof e.data.progress === "number") {
-            const rawProgress = normalizeProgressValue(e.data.progress);
-            const nextProgress =
-              statusRef.current === "loading"
-                ? Math.round(10 + rawProgress * 0.4)
-                : rawProgress;
-            setProgress((prev) => Math.max(prev, nextProgress));
-          }
           break;
       }
     },
@@ -230,20 +227,50 @@ export function useTranscription() {
     });
 
     newWorker.addEventListener("message", workerMessageHandler);
+    newWorker.addEventListener("error", (event) => {
+      if (worker.current !== newWorker) return;
+      const message =
+        event.message || "The speech worker stopped unexpectedly.";
+      const error = new Error(
+        statusRef.current === "loading"
+          ? getModelLoadingErrorMessage(message)
+          : message,
+      );
+      modelLoadRejectRef.current?.(error);
+      modelLoadingPromiseRef.current = null;
+      modelLoadResolveRef.current = null;
+      modelLoadRejectRef.current = null;
+      modelReadyRef.current = false;
+      transcribingRef.current = false;
+      setError(error.message);
+      updateStatus("idle");
+      setProgress(0);
+      setModelLoading(null);
+      newWorker.terminate();
+      worker.current = null;
+    });
     worker.current = newWorker;
-  }, [workerMessageHandler]);
+  }, [workerMessageHandler, updateStatus]);
+
+  const disposeWorker = useCallback(() => {
+    operationIdRef.current++;
+    audioControllerRef.current?.abort();
+    audioControllerRef.current = null;
+    modelLoadRejectRef.current?.(new DOMException("Cancelled", "AbortError"));
+    modelLoadResolveRef.current = null;
+    modelLoadRejectRef.current = null;
+    modelLoadingPromiseRef.current = null;
+    modelReadyRef.current = false;
+    transcribingRef.current = false;
+    worker.current?.terminate();
+    worker.current = null;
+  }, []);
 
   useEffect(() => {
-    initializeWorker();
-
     return () => {
-      if (worker.current) {
-        worker.current.removeEventListener("message", workerMessageHandler);
-        worker.current.terminate();
-        worker.current = null;
-      }
+      disposeWorker();
     };
-  }, [initializeWorker, workerMessageHandler]);
+  }, [disposeWorker]);
 
   const ensureModelLoaded = useCallback(
     async (modelSize: ModelSize = "base") => {
@@ -295,10 +322,13 @@ export function useTranscription() {
 
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const handleVideoSelect = async (_file: File) => {
+    disposeWorker();
     // Reset states — don't preload any model here; let the user pick model size first
     setError(null);
+    setNotice(null);
     setResult(null);
     setProgress(0);
+    setModelLoading(null);
     transcribingRef.current = false;
     updateStatus("ready");
   };
@@ -312,43 +342,59 @@ export function useTranscription() {
       // Guard against double calls (React Strict Mode, double-clicks, etc.)
       if (transcribingRef.current) return;
       transcribingRef.current = true;
+      const operationId = ++operationIdRef.current;
+      const controller = new AbortController();
+      audioControllerRef.current = controller;
 
       try {
         // Reset states
         setError(null);
+        setNotice(null);
         setResult(null);
         setLiveText("");
         setProgress(0);
+        setModelLoading(null);
 
-        updateStatus("processing");
-        setProgress(5);
+        // Confirm readable, non-silent audio before loading the large model.
+        updateStatus("extracting");
+        const audioData = await extractAudioFromVideo(file, controller.signal);
+        if (operationId !== operationIdRef.current) return;
 
         if (!modelReadyRef.current || modelSizeRef.current !== modelSize) {
           updateStatus("loading");
-          setProgress((prev) => Math.max(prev, 10));
           await ensureModelLoaded(modelSize);
         }
-
-        updateStatus("extracting");
-        setProgress((prev) => Math.max(prev, 35));
-        const audioData = await extractAudioFromVideo(file);
+        if (operationId !== operationIdRef.current) return;
 
         if (!worker.current) {
           throw new Error("Worker not initialized properly");
         }
 
         updateStatus("transcribing");
-        setProgress((prev) => Math.max(prev, 60));
-        worker.current.postMessage({
-          type: "run",
-          data: {
-            audio: audioData,
-            language,
-            device: deviceRef.current,
-            modelSize,
+        setProgress(0);
+        worker.current.postMessage(
+          {
+            type: "run",
+            data: {
+              audio: audioData,
+              language,
+              device: deviceRef.current,
+              modelSize,
+            },
           },
-        });
+          [audioData.buffer],
+        );
       } catch (err) {
+        if (operationId !== operationIdRef.current) return;
+        if (err instanceof NoAudioDetectedError) {
+          disposeWorker();
+          setNotice(err.message);
+          setError(null);
+          updateStatus("ready");
+          setProgress(0);
+          setModelLoading(null);
+          return;
+        }
         console.error("Error in startTranscription:", err);
         if (err instanceof Error) {
           console.error("Error stack:", err.stack);
@@ -356,6 +402,7 @@ export function useTranscription() {
         setError(err instanceof Error ? err.message : String(err));
         updateStatus("idle");
         setProgress(0);
+        setModelLoading(null);
         modelReadyRef.current = false;
         modelLoadingPromiseRef.current = null;
         modelLoadResolveRef.current = null;
@@ -369,50 +416,46 @@ export function useTranscription() {
         }
       }
     },
-    [ensureModelLoaded, updateStatus],
+    [ensureModelLoaded, updateStatus, disposeWorker],
   );
 
   const resetTranscription = () => {
+    disposeWorker();
     // Reset states
     setError(null);
+    setNotice(null);
     setResult(null);
     setLiveText("");
     transcribingRef.current = false;
     updateStatus(modelReadyRef.current ? "ready" : "idle");
     setProgress(0);
-
-    if (!worker.current) {
-      initializeWorker();
-    }
+    setModelLoading(null);
   };
 
   const cancelTranscription = useCallback(() => {
+    disposeWorker();
     setError(null);
+    setNotice(null);
     setResult(null);
     setLiveText("");
     transcribingRef.current = false;
     updateStatus("idle");
     setProgress(0);
+    setModelLoading(null);
     modelReadyRef.current = false;
     modelLoadingPromiseRef.current = null;
     modelLoadResolveRef.current = null;
     modelLoadRejectRef.current = null;
-
-    if (worker.current) {
-      worker.current.removeEventListener("message", workerMessageHandler);
-      worker.current.terminate();
-      worker.current = null;
-    }
-
-    initializeWorker();
-  }, [initializeWorker, updateStatus, workerMessageHandler]);
+  }, [disposeWorker, updateStatus]);
 
   return {
     status,
     error,
+    notice,
     result,
     liveText,
     progress,
+    modelLoading,
     device,
     setResult,
     setStatus: updateStatus,

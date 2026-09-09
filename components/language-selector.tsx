@@ -148,7 +148,10 @@ export function LanguageSelector({
         onValueChange={(value) => onLanguageChange(value as LanguageCode)}
         disabled={disabled}
       >
-        <SelectTrigger className="w-full rounded-md border border-border/40 bg-background px-3 py-2 text-sm shadow-sm">
+        <SelectTrigger
+          aria-label="Video language"
+          className="w-full rounded-md border border-border/40 bg-background px-3 py-2 text-sm shadow-sm"
+        >
           <SelectValue placeholder="Select language" />
         </SelectTrigger>
         <SelectContent className="max-h-[300px]">

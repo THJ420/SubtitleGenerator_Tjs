@@ -2,6 +2,14 @@ import {
   pipeline,
   AutomaticSpeechRecognitionPipeline,
 } from "@huggingface/transformers";
+import {
+  ModelDownloadTracker,
+  type ModelFileProgress,
+} from "../lib/transcription-progress";
+import {
+  getModelLoadingErrorMessage,
+  isModelNetworkError,
+} from "../lib/transcription-errors";
 
 type DeviceType = "webgpu" | "wasm";
 export type ModelSize = "tiny" | "base" | "small";
@@ -35,19 +43,15 @@ class PipelineSingleton {
   static instance: Promise<AutomaticSpeechRecognitionPipeline> | null = null;
 
   static resetInstance(): void {
+    const previous = this.instance;
     this.instance = null;
     this.currentModelId = null;
+    void previous?.then((pipeline) => pipeline.dispose()).catch(() => {});
   }
 
   static async getInstance(
     modelSize: ModelSize = "base",
-    progress_callback?: (progress: {
-      status?: string;
-      data?: unknown;
-      loaded?: number;
-      total?: number;
-      progress?: number;
-    }) => void,
+    progress_callback?: (progress: ModelFileProgress) => void,
     device: DeviceType = "webgpu",
   ): Promise<AutomaticSpeechRecognitionPipeline> {
     const modelId = MODEL_IDS[modelSize];
@@ -82,7 +86,7 @@ function shouldFallbackToWasm(
   device: DeviceType,
   fallbackAttempted: boolean,
 ): boolean {
-  if (device !== "webgpu" || fallbackAttempted) {
+  if (device !== "webgpu" || fallbackAttempted || isModelNetworkError(error)) {
     return false;
   }
 
@@ -107,7 +111,7 @@ function notifyWasmFallback(): void {
   self.postMessage({
     status: "fallback",
     device: "wasm",
-    data: "WebGPU ran out of memory. Switching to CPU...",
+    data: "WebGPU could not continue. Switching to CPU...",
   });
 }
 
@@ -149,17 +153,18 @@ async function handleLoad({
       loadPromise = null;
     }
 
-    self.postMessage({
-      status: "loading",
-      data: `Loading ${modelSize} model (${device})...`,
-    });
+    const tracker = new ModelDownloadTracker();
+    const reportLoading = (loading = tracker.snapshot()) => {
+      self.postMessage({ status: "model-loading", loading, device });
+    };
+    reportLoading();
 
     loadPromise = (async () => {
       try {
         const transcriber = await PipelineSingleton.getInstance(
           modelSize,
           (progressInfo) => {
-            self.postMessage(progressInfo);
+            reportLoading(tracker.update(progressInfo));
           },
           device,
         );
@@ -168,15 +173,16 @@ async function handleLoad({
         activeModelSize = modelSize;
 
         if (device === "webgpu") {
-          self.postMessage({
-            status: "loading",
-            data: "Compiling shaders and warming up model...",
-          });
+          reportLoading(tracker.setPhase("warming"));
 
           await transcriber(new Float32Array(16_000), {
             language: "en",
+            // Only compile the encoder and initial/cached decoder paths.
+            // Unbounded generation on silence can spend minutes on warmup.
+            max_new_tokens: 2,
           });
         }
+        reportLoading(tracker.setPhase("ready"));
       } catch (error) {
         resetPipelineState();
         throw error;
@@ -186,7 +192,7 @@ async function handleLoad({
 
   try {
     await loadPromise;
-    self.postMessage({ status: "ready" });
+    self.postMessage({ status: "model-ready", device: activeDevice });
   } catch (error) {
     console.error("Worker: Error loading model:", error);
     if (shouldFallbackToWasm(error, device, fallbackAttempted)) {
@@ -203,7 +209,7 @@ async function handleLoad({
     loadPromise = null;
     self.postMessage({
       status: "error",
-      data: getErrorMessage(error),
+      data: getModelLoadingErrorMessage(error),
     });
   }
 }
@@ -228,6 +234,7 @@ async function handleRun({
   modelSize?: ModelSize;
   fallbackAttempted?: boolean;
 }) {
+  let loadingModel = true;
   try {
     if (loadPromise) {
       await loadPromise;
@@ -235,15 +242,21 @@ async function handleRun({
 
     const targetDevice = device ?? activeDevice ?? "wasm";
     const targetModelSize = modelSize ?? activeModelSize ?? "base";
+    const tracker = new ModelDownloadTracker();
     const transcriber = await PipelineSingleton.getInstance(
       targetModelSize,
       (progressInfo) => {
-        self.postMessage(progressInfo);
+        self.postMessage({
+          status: "model-loading",
+          loading: tracker.update(progressInfo),
+          device: targetDevice,
+        });
       },
       targetDevice,
     );
     activeDevice = targetDevice;
     activeModelSize = targetModelSize;
+    loadingModel = false;
     self.postMessage({ status: "transcribing", device: targetDevice });
 
     // Access the pipeline's internal components (same as _call_whisper uses)
@@ -350,7 +363,7 @@ async function handleRun({
           text: partialText,
           chunks: partialOptional.chunks ?? [],
         },
-        progress: 60 + Math.round(((i + 1) / chunks.length) * 39),
+        progress: Math.round(((i + 1) / chunks.length) * 100),
       });
     }
 
@@ -390,7 +403,9 @@ async function handleRun({
     resetPipelineState();
     self.postMessage({
       status: "error",
-      data: getErrorMessage(error),
+      data: loadingModel
+        ? getModelLoadingErrorMessage(error)
+        : getErrorMessage(error),
     });
   }
 }

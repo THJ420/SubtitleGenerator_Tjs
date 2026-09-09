@@ -19,6 +19,19 @@ export interface SilenceRemovalPlan {
   outputDuration: number;
 }
 
+/** Exact cut boundaries for playback; never trim extra speech around a cut. */
+export function getPlaybackSkipTarget(
+  time: number,
+  ranges: readonly (readonly number[])[],
+  duration: number,
+): number | null {
+  for (const [start, end] of ranges) {
+    if (time < start) break;
+    if (time < end - 0.000001) return Math.min(duration || end, end);
+  }
+  return null;
+}
+
 export interface SilenceAdjustableChunk {
   text: string;
   timestamp: [number, number];
@@ -137,6 +150,27 @@ export function createSilenceRemovalPlan(
   };
 }
 
+/** Use the same source cuts for playback, auto zoom, and exported video. */
+export function createVideoCutPlan(
+  duration: number,
+  silenceRanges: readonly TimeRange[],
+  chunks: ReadonlyArray<Pick<SilenceAdjustableChunk, "timestamp" | "disabled">>,
+): SilenceRemovalPlan | null {
+  if (!Number.isFinite(duration) || duration <= 0) return null;
+  const removedRanges = [
+    ...silenceRanges,
+    ...chunks
+      .filter((chunk) => chunk.disabled)
+      .map((chunk) => ({
+        startTime: chunk.timestamp[0],
+        endTime: chunk.timestamp[1],
+      })),
+  ];
+  return removedRanges.length > 0
+    ? createSilenceRemovalPlan(duration, removedRanges)
+    : null;
+}
+
 export function sourceTimeToOutputTime(
   sourceTime: number,
   plan: SilenceRemovalPlan,
@@ -166,7 +200,7 @@ export function outputTimeToSourceTime(
 
   const clamped = Math.max(0, Math.min(outputTime, plan.outputDuration));
   for (const range of plan.keptRanges) {
-    if (clamped <= range.outputEndTime) {
+    if (clamped < range.outputEndTime) {
       return Math.min(
         range.endTime,
         range.startTime + Math.max(0, clamped - range.outputStartTime),

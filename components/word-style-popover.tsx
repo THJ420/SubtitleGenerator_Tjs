@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState, useRef, useEffect } from "react";
+import { useMemo, useState, useRef, useEffect, useId } from "react";
 import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
 import {
@@ -25,6 +25,7 @@ import { cn } from "@/lib/utils";
 import { type WordStyleOverride } from "@/lib/transcript-utils";
 import { DebouncedColorInput } from "@/components/ui/debounced-color-input";
 import dynamic from "next/dynamic";
+import panelStyles from "@/components/editor-panels.module.css";
 
 const EmojiPicker = dynamic(() => import("emoji-picker-react"), { ssr: false });
 
@@ -56,6 +57,16 @@ export function WordStylePopover({
   >(null);
   const [activeSection, setActiveSection] = useState<Section | null>(null);
   const pickerRef = useRef<HTMLDivElement>(null);
+  const titleId = useId();
+
+  const handleKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    event.stopPropagation();
+    if (event.key === "Escape") {
+      event.preventDefault();
+      if (showEmojiPicker) setShowEmojiPicker(null);
+      else onClose();
+    }
+  };
 
   // Close picker on outside click
   useEffect(() => {
@@ -174,6 +185,7 @@ export function WordStylePopover({
         onValueChange={handleFontFamilyChange}
       >
         <SelectTrigger
+          aria-label="Word font"
           className="w-full rounded-md border-border bg-background px-3 py-1.5 text-xs shadow-sm"
           style={currentFontCss ? { fontFamily: currentFontCss } : undefined}
         >
@@ -211,6 +223,7 @@ export function WordStylePopover({
         </span>
       </div>
       <Slider
+        aria-label="Word size"
         value={[sizePercent]}
         onValueChange={handleSizeChange}
         min={50}
@@ -233,6 +246,7 @@ export function WordStylePopover({
       )}
       <div className="flex items-center gap-2">
         <DebouncedColorInput
+          aria-label="Word color"
           value={override.color ?? "#FFFFFF"}
           onChange={handleColorChange}
           className="w-8 h-8 rounded cursor-pointer border border-border"
@@ -262,6 +276,8 @@ export function WordStylePopover({
         <p className="text-xs font-medium text-muted-foreground">Effect</p>
       )}
       <button
+        type="button"
+        aria-pressed={override.effect === "knockout"}
         onClick={handleToggleKnockout}
         className={cn(
           "w-full text-xs px-3 py-1.5 rounded-md border transition-colors text-left",
@@ -375,6 +391,7 @@ export function WordStylePopover({
             </span>
           </div>
           <Slider
+            aria-label="Emoji size"
             value={[emojiScalePercent]}
             onValueChange={handleEmojiScaleChange}
             min={50}
@@ -454,18 +471,18 @@ export function WordStylePopover({
 
     return (
       <div
-        className={cn(
-          "bg-background border border-border rounded-xl shadow-xl p-3",
-          className,
-        )}
-        style={{ fontFamily: "var(--font-outfit), sans-serif" }}
-        role="none"
+        className={cn(panelStyles.wordPopover, "p-3", className)}
+        role="dialog"
+        aria-labelledby={titleId}
         onClick={(e) => e.stopPropagation()}
-        onKeyDown={(e) => e.stopPropagation()}
+        onKeyDown={handleKeyDown}
       >
         {/* Header */}
         <div className="flex items-center justify-between mb-2">
-          <h4 className="text-xs font-semibold text-foreground truncate flex-1 mr-2">
+          <h4
+            id={titleId}
+            className="text-xs font-semibold text-foreground truncate flex-1 mr-2"
+          >
             &ldquo;{wordText}&rdquo;
           </h4>
           <div className="flex items-center gap-1">
@@ -474,12 +491,14 @@ export function WordStylePopover({
                 onClick={onReset}
                 className="p-1 rounded-md hover:bg-muted text-muted-foreground hover:text-foreground transition-colors"
                 title="Reset to global"
+                aria-label="Reset word style"
               >
                 <RotateCcw className="h-3.5 w-3.5" />
               </button>
             )}
             <button
               onClick={onClose}
+              aria-label="Close word style"
               className="p-1 rounded-md hover:bg-muted text-muted-foreground hover:text-foreground transition-colors"
             >
               <X className="h-3.5 w-3.5" />
@@ -492,11 +511,13 @@ export function WordStylePopover({
           {sections.map((s) => (
             <button
               key={s.key}
+              type="button"
+              aria-expanded={activeSection === s.key}
               onClick={() => toggleSection(s.key)}
               className={cn(
                 "flex-1 flex flex-col items-center gap-0.5 py-1.5 rounded-lg border text-[10px] font-medium transition-colors",
                 activeSection === s.key
-                  ? "bg-primary text-primary-foreground border-primary"
+                  ? "bg-yellow-50 text-foreground border-yellow-400"
                   : s.hasValue
                     ? "bg-amber-50 text-amber-700 border-amber-300 hover:bg-amber-100"
                     : "bg-muted text-muted-foreground border-border hover:bg-muted",
@@ -522,24 +543,23 @@ export function WordStylePopover({
 
   return (
     <div
-      className={cn(
-        "bg-background border border-border rounded-xl shadow-xl p-4 w-72",
-        className,
-      )}
-      style={{
-        fontFamily: "var(--font-outfit), sans-serif",
-      }}
-      role="none"
+      className={cn(panelStyles.wordPopover, "p-4 w-72", className)}
+      role="dialog"
+      aria-labelledby={titleId}
       onClick={(e) => e.stopPropagation()}
-      onKeyDown={(e) => e.stopPropagation()}
+      onKeyDown={handleKeyDown}
     >
       {/* Header */}
       <div className="flex items-center justify-between mb-3">
-        <h4 className="text-sm font-semibold text-foreground truncate flex-1 mr-2">
+        <h4
+          id={titleId}
+          className="text-sm font-semibold text-foreground truncate flex-1 mr-2"
+        >
           Style: &ldquo;{wordText}&rdquo;
         </h4>
         <button
           onClick={onClose}
+          aria-label="Close word style"
           className="p-1 rounded-md hover:bg-muted text-muted-foreground hover:text-foreground transition-colors"
         >
           <X className="h-4 w-4" />

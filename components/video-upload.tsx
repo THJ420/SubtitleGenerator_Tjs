@@ -10,6 +10,11 @@ import {
   useMemo,
 } from "react";
 import { cn } from "@/lib/utils";
+import {
+  releaseVideo,
+  waitForMediaEvent,
+  withAbortSignal,
+} from "@/lib/media-lifecycle";
 import { formatTime, type WordStyleOverride } from "@/lib/transcript-utils";
 import { VideoCaption } from "./video-caption";
 import { SubtitleStyle } from "./subtitle-styling";
@@ -34,7 +39,6 @@ import {
   type MaskData,
 } from "@/hooks/useBackgroundRemoval";
 import {
-  renderSubtitleToCanvas,
   renderDynamicBehindText,
   renderDynamicFrontText,
   estimateFaceFromMask,
@@ -43,7 +47,8 @@ import { drawBrandingWatermark } from "@/lib/export-renderer";
 import { computeCropX } from "@/lib/person-tracking";
 import {
   adjustTranscriptChunksForSilenceRemoval,
-  createSilenceRemovalPlan,
+  createVideoCutPlan,
+  getPlaybackSkipTarget,
   sourceTimeToOutputTime,
   type TimeRange,
 } from "@/lib/silence-removal";
@@ -52,6 +57,33 @@ import {
   getAutoZoomCutIndex,
   getAutoZoomCssTransform,
 } from "@/lib/auto-zoom";
+
+async function readRecordedVideoDuration(file: File, signal: AbortSignal) {
+  // Recorders can omit WebM duration metadata. Read packet timestamps from the
+  // local file instead of seeking to an arbitrary time to force a duration.
+  const { Input, BlobSource, ALL_FORMATS } = await withAbortSignal(
+    import("mediabunny"),
+    signal,
+  );
+  signal.throwIfAborted();
+  const input = new Input({
+    source: new BlobSource(file),
+    formats: ALL_FORMATS,
+  });
+  const disposeInput = () => input.dispose();
+  signal.addEventListener("abort", disposeInput, { once: true });
+  try {
+    const duration = await withAbortSignal(
+      input.computeDuration(undefined, { skipLiveWait: true }),
+      signal,
+    );
+    signal.throwIfAborted();
+    return Number.isFinite(duration) && duration > 0 ? duration : 0;
+  } finally {
+    signal.removeEventListener("abort", disposeInput);
+    input.dispose();
+  }
+}
 
 interface VideoUploadProps {
   onVideoSelect: (file: File) => void;
@@ -79,6 +111,7 @@ interface VideoUploadProps {
   getMaskAtTime?: (time: number, fps?: number) => MaskData | null;
   getCenterX?: () => number;
   isFaceTrackingActive?: boolean;
+  cropTrackingEnabled?: boolean;
   silenceRemovalRanges?: TimeRange[];
   autoZoomEnabled?: boolean;
 }
@@ -102,6 +135,7 @@ const VideoUploadComponent = forwardRef<HTMLVideoElement, VideoUploadProps>(
       getMaskAtTime,
       getCenterX,
       isFaceTrackingActive = false,
+      cropTrackingEnabled = false,
       silenceRemovalRanges = [],
       autoZoomEnabled = false,
     },
@@ -109,17 +143,16 @@ const VideoUploadComponent = forwardRef<HTMLVideoElement, VideoUploadProps>(
   ) => {
     const [videoSrc, setVideoSrc] = useState<string | null>(null);
     const [error, setError] = useState<string | null>(null);
-    const [isSkipping, setIsSkipping] = useState(false);
     // Track the current blob URL so we can revoke it when it's no longer needed
     const videoObjectUrlRef = useRef<string | null>(null);
-    const skipTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-    const isSkippingRef = useRef(false);
+    const fileLoadRef = useRef<AbortController | null>(null);
     const skipWatchFrameRef = useRef<number>(0);
     const lastAutoZoomSyncRef = useRef(0);
     const autoZoomCutIndexRef = useRef(-1);
     const autoZoomFaceXRef = useRef(0.5);
     const [isPlaying, setIsPlaying] = useState(false);
     const [duration, setDuration] = useState(0);
+    const recordedDurationRef = useRef(0);
     const [isMuted, setIsMuted] = useState(false);
     const [isRecorderOpen, setIsRecorderOpen] = useState(false);
     // Local time state: updated directly from video's timeupdate without going through main-app
@@ -146,12 +179,15 @@ const VideoUploadComponent = forwardRef<HTMLVideoElement, VideoUploadProps>(
       }
     }, []);
 
-    // Clear pending timeouts on unmount
+    // Release pending file reads and the video URL on unmount.
     useEffect(() => {
       return () => {
-        if (skipTimeoutRef.current) clearTimeout(skipTimeoutRef.current);
+        fileLoadRef.current?.abort();
+        fileLoadRef.current = null;
+        processedFileRef.current = null;
+        revokeVideoObjectUrl();
       };
-    }, []);
+    }, [revokeVideoObjectUrl]);
 
     // Track video container width for responsive subtitle sizing
     useEffect(() => {
@@ -162,7 +198,7 @@ const VideoUploadComponent = forwardRef<HTMLVideoElement, VideoUploadProps>(
       });
       ro.observe(el);
       return () => ro.disconnect();
-    }, []);
+    }, [videoSrc]);
 
     // Sync progress bar fill + time display from currentTime prop, skip while dragging.
     // Also syncs localTime so VideoCaption reflects external seeks (sidebar clicks, reset).
@@ -184,17 +220,21 @@ const VideoUploadComponent = forwardRef<HTMLVideoElement, VideoUploadProps>(
       bgRemovalReady && subtitleStyle.backgroundRemovalEnabled && getMaskAtTime;
     const compositingActive = isDynamicMode || isBgRemovalMode;
     const needsFaceTrackCanvas =
-      isFaceTrackingActive && !compositingActive && ratio === "9:16";
+      cropTrackingEnabled &&
+      isFaceTrackingActive &&
+      !compositingActive &&
+      ratio === "9:16";
     const silenceRemovalPlan = useMemo(
       () =>
-        duration > 0 && silenceRemovalRanges.length > 0
-          ? createSilenceRemovalPlan(duration, silenceRemovalRanges)
-          : null,
-      [duration, silenceRemovalRanges],
+        createVideoCutPlan(
+          duration,
+          silenceRemovalRanges,
+          transcript?.chunks ?? [],
+        ),
+      [duration, silenceRemovalRanges, transcript],
     );
-    // Auto-zoom cuts run on the exported (silence-removed) timeline so the
-    // preview schedule matches what export produces. When silence removal is
-    // off, plan is null and this collapses to the raw source timeline.
+    // Auto zoom uses the exported timeline, including both quiet sections and
+    // sections removed by the user. With no cuts, use the source timeline.
     const autoZoomDuration = silenceRemovalPlan
       ? silenceRemovalPlan.outputDuration
       : duration;
@@ -257,6 +297,13 @@ const VideoUploadComponent = forwardRef<HTMLVideoElement, VideoUploadProps>(
 
     const handleFile = useCallback(
       async (file: File) => {
+        fileLoadRef.current?.abort();
+        const controller = new AbortController();
+        fileLoadRef.current = controller;
+        recordedDurationRef.current = 0;
+        setDuration(0);
+        onDurationChange?.(0);
+        let video: HTMLVideoElement | null = null;
         try {
           if (!file.type.startsWith("video/")) {
             throw new Error("Please select a video file");
@@ -270,7 +317,7 @@ const VideoUploadComponent = forwardRef<HTMLVideoElement, VideoUploadProps>(
           }
 
           // Create video element to check duration
-          const video = document.createElement("video");
+          video = document.createElement("video");
           video.preload = "metadata";
 
           // Revoke previous blob URL before creating a new one
@@ -278,11 +325,31 @@ const VideoUploadComponent = forwardRef<HTMLVideoElement, VideoUploadProps>(
           const objectUrl = URL.createObjectURL(file);
           videoObjectUrlRef.current = objectUrl;
 
-          await new Promise((resolve, reject) => {
-            video.onloadedmetadata = resolve;
-            video.onerror = reject;
-            video.src = objectUrl;
+          await waitForMediaEvent(video, "loadedmetadata", {
+            signal: controller.signal,
+            start: () => {
+              video!.src = objectUrl;
+            },
           });
+          controller.signal.throwIfAborted();
+
+          let nextDuration = video.duration;
+          if (!Number.isFinite(nextDuration) || nextDuration <= 0) {
+            try {
+              nextDuration = await readRecordedVideoDuration(
+                file,
+                controller.signal,
+              );
+              recordedDurationRef.current = nextDuration;
+            } catch (durationError) {
+              controller.signal.throwIfAborted();
+              // A playable format may not be readable by the metadata parser.
+              // Keep playback available while waiting for a finite native value.
+              console.warn("Could not read the video duration", durationError);
+              nextDuration = 0;
+            }
+          }
+          controller.signal.throwIfAborted();
 
           // Detect aspect ratio from video dimensions
           const detectedRatio: "16:9" | "9:16" =
@@ -290,6 +357,8 @@ const VideoUploadComponent = forwardRef<HTMLVideoElement, VideoUploadProps>(
 
           setVideoSrc(objectUrl);
           setError(null);
+          setDuration(nextDuration);
+          onDurationChange?.(nextDuration);
           onVideoSelect(file);
 
           // Notify parent of detected aspect ratio
@@ -297,15 +366,43 @@ const VideoUploadComponent = forwardRef<HTMLVideoElement, VideoUploadProps>(
             onAspectRatioDetected(detectedRatio);
           }
         } catch (err) {
+          if (controller.signal.aborted) return;
           const message =
             err instanceof Error ? err.message : "Error loading video";
           setError(message);
           toast.error(message);
           revokeVideoObjectUrl();
           setVideoSrc(null);
+        } finally {
+          if (video) releaseVideo(video);
+          if (fileLoadRef.current === controller) fileLoadRef.current = null;
         }
       },
-      [onVideoSelect, onAspectRatioDetected, revokeVideoObjectUrl],
+      [
+        onVideoSelect,
+        onAspectRatioDetected,
+        onDurationChange,
+        revokeVideoObjectUrl,
+      ],
+    );
+
+    const handleDurationChange = useCallback(
+      (event: React.SyntheticEvent<HTMLVideoElement>) => {
+        const video = event.currentTarget;
+        if (
+          video.src !== videoObjectUrlRef.current ||
+          // After seeking, a recording may report only its last frame timestamp.
+          // The packet-derived value also includes that frame's duration.
+          recordedDurationRef.current > 0 ||
+          !Number.isFinite(video.duration) ||
+          video.duration <= 0
+        ) {
+          return;
+        }
+        setDuration(video.duration);
+        onDurationChange?.(video.duration);
+      },
+      [onDurationChange],
     );
 
     const handleRecordedVideo = useCallback(
@@ -350,44 +447,15 @@ const VideoUploadComponent = forwardRef<HTMLVideoElement, VideoUploadProps>(
       void handleFile(initialFile);
     }, [initialFile, handleFile]);
 
-    // Function to get disabled time ranges
-    const getDisabledRanges = useCallback(() => {
-      if (!transcript) return [];
-
-      const disabledRanges: Array<[number, number]> = silenceRemovalPlan
+    // Keep source timestamps unchanged: editing and restoring words use them as IDs.
+    const disabledRanges = useMemo(() => {
+      return silenceRemovalPlan
         ? silenceRemovalPlan.removedRanges.map((range) => [
             range.startTime,
             range.endTime,
           ])
         : [];
-
-      transcript.chunks.forEach((chunk) => {
-        if (chunk.disabled) {
-          disabledRanges.push(chunk.timestamp);
-        }
-      });
-
-      // Sort ranges by start time and merge overlapping ranges
-      disabledRanges.sort((a, b) => a[0] - b[0]);
-      const mergedRanges: Array<[number, number]> = [];
-
-      for (const range of disabledRanges) {
-        if (
-          mergedRanges.length === 0 ||
-          mergedRanges[mergedRanges.length - 1][1] < range[0]
-        ) {
-          mergedRanges.push(range);
-        } else {
-          // Merge overlapping ranges
-          mergedRanges[mergedRanges.length - 1][1] = Math.max(
-            mergedRanges[mergedRanges.length - 1][1],
-            range[1],
-          );
-        }
-      }
-
-      return mergedRanges;
-    }, [transcript, silenceRemovalPlan]);
+    }, [silenceRemovalPlan]);
 
     const syncPreviewTime = useCallback(
       (time: number) => {
@@ -404,32 +472,21 @@ const VideoUploadComponent = forwardRef<HTMLVideoElement, VideoUploadProps>(
     );
 
     const maybeSkipDisabledRange = useCallback(
-      (video: HTMLVideoElement, lookahead = 0) => {
-        if (seekingRef.current || isSkippingRef.current || !transcript) {
-          return false;
-        }
-
-        const time = video.currentTime;
-        for (const [start, end] of getDisabledRanges()) {
-          if (time >= start - lookahead && time < end) {
-            const nextTime = Math.min(duration || end, end + 0.03);
-            isSkippingRef.current = true;
-            setIsSkipping(true);
-            video.currentTime = nextTime;
-            syncPreviewTime(nextTime);
-
-            if (skipTimeoutRef.current) clearTimeout(skipTimeoutRef.current);
-            skipTimeoutRef.current = setTimeout(() => {
-              isSkippingRef.current = false;
-              setIsSkipping(false);
-            }, 80);
-            return true;
-          }
-        }
-
-        return false;
+      (video: HTMLVideoElement) => {
+        // A seek keeps playback running. Wait for its decoded frame before
+        // checking another cut, and leave paused editing/export seeks alone.
+        if (video.paused || video.seeking || seekingRef.current) return false;
+        const target = getPlaybackSkipTarget(
+          video.currentTime,
+          disabledRanges,
+          duration,
+        );
+        if (target === null) return false;
+        video.currentTime = target;
+        syncPreviewTime(target);
+        return true;
       },
-      [duration, getDisabledRanges, syncPreviewTime, transcript],
+      [duration, disabledRanges, syncPreviewTime],
     );
 
     // Function to handle time updates and skip disabled segments
@@ -458,7 +515,7 @@ const VideoUploadComponent = forwardRef<HTMLVideoElement, VideoUploadProps>(
               syncPreviewTime(videoEl.currentTime);
             }
           }
-          maybeSkipDisabledRange(videoEl, 0.08);
+          maybeSkipDisabledRange(videoEl);
           skipWatchFrameRef.current = requestAnimationFrame(watch);
         }
       };
@@ -514,24 +571,31 @@ const VideoUploadComponent = forwardRef<HTMLVideoElement, VideoUploadProps>(
       let lastRenderedTime = -1;
 
       const render = () => {
-        if (!videoEl) {
+        const displayWidth = canvas.clientWidth;
+        const displayHeight = canvas.clientHeight;
+        if (
+          videoEl.readyState < 2 ||
+          videoEl.seeking ||
+          displayWidth === 0 ||
+          displayHeight === 0
+        ) {
           animFrameRef.current = requestAnimationFrame(render);
           return;
         }
 
         const time = videoEl.currentTime;
+        const sizeChanged =
+          canvas.width !== displayWidth || canvas.height !== displayHeight;
 
         // Skip rendering when paused and we already drew this frame
-        if (videoEl.paused && time === lastRenderedTime) {
+        if (videoEl.paused && time === lastRenderedTime && !sizeChanged) {
           animFrameRef.current = requestAnimationFrame(render);
           return;
         }
         lastRenderedTime = time;
 
         // Match canvas to displayed size
-        const displayWidth = canvas.clientWidth;
-        const displayHeight = canvas.clientHeight;
-        if (canvas.width !== displayWidth || canvas.height !== displayHeight) {
+        if (sizeChanged) {
           canvas.width = displayWidth;
           canvas.height = displayHeight;
         }
@@ -556,11 +620,12 @@ const VideoUploadComponent = forwardRef<HTMLVideoElement, VideoUploadProps>(
           if (videoAR > canvasAR) {
             // Video is wider — crop sides
             sw = Math.round(vh * canvasAR);
-            if (isFaceTrackingActive && getCenterX) {
-              sx = computeCropX(getCenterX(), vw, sw);
-            } else {
-              sx = Math.round((vw - sw) / 2);
-            }
+            sx = computeCropX(
+              getCenterX?.() ?? 0.5,
+              vw,
+              sw,
+              cropTrackingEnabled && isFaceTrackingActive,
+            );
           } else {
             // Video is taller — crop top/bottom
             sh = Math.round(vw / canvasAR);
@@ -663,7 +728,7 @@ const VideoUploadComponent = forwardRef<HTMLVideoElement, VideoUploadProps>(
           ctx.drawImage(fgCanvas, 0, 0);
         }
 
-        // Step 4: Render front text (dynamic) or on-top text (non-dynamic)
+        // Step 4: Render front depth text. Normal captions use VideoCaption.
         if (isDynamic && transcript) {
           const faceBounds = estimateFaceFromMask(
             mask.data,
@@ -680,16 +745,6 @@ const VideoUploadComponent = forwardRef<HTMLVideoElement, VideoUploadProps>(
             w,
             h,
             faceBounds,
-          );
-        } else if (transcript) {
-          renderSubtitleToCanvas(
-            ctx,
-            transcript,
-            time,
-            subtitleStyle,
-            mode,
-            w,
-            h,
           );
         }
 
@@ -712,10 +767,11 @@ const VideoUploadComponent = forwardRef<HTMLVideoElement, VideoUploadProps>(
       ref,
       subtitleStyle,
       transcript,
-      mode,
       getMaskAtTime,
       isFaceTrackingActive,
+      cropTrackingEnabled,
       getCenterX,
+      videoSrc,
     ]);
 
     // Non-compositing face tracking canvas loop:
@@ -740,21 +796,28 @@ const VideoUploadComponent = forwardRef<HTMLVideoElement, VideoUploadProps>(
       let lastRenderedTime = -1;
 
       const render = () => {
-        if (!videoEl) {
+        const displayWidth = canvas.clientWidth;
+        const displayHeight = canvas.clientHeight;
+        if (
+          videoEl.readyState < 2 ||
+          videoEl.seeking ||
+          displayWidth === 0 ||
+          displayHeight === 0
+        ) {
           faceTrackAnimFrameRef.current = requestAnimationFrame(render);
           return;
         }
 
         const time = videoEl.currentTime;
-        if (videoEl.paused && time === lastRenderedTime) {
+        const sizeChanged =
+          canvas.width !== displayWidth || canvas.height !== displayHeight;
+        if (videoEl.paused && time === lastRenderedTime && !sizeChanged) {
           faceTrackAnimFrameRef.current = requestAnimationFrame(render);
           return;
         }
         lastRenderedTime = time;
 
-        const displayWidth = canvas.clientWidth;
-        const displayHeight = canvas.clientHeight;
-        if (canvas.width !== displayWidth || canvas.height !== displayHeight) {
+        if (sizeChanged) {
           canvas.width = displayWidth;
           canvas.height = displayHeight;
         }
@@ -792,7 +855,7 @@ const VideoUploadComponent = forwardRef<HTMLVideoElement, VideoUploadProps>(
           faceTrackAnimFrameRef.current = 0;
         }
       };
-    }, [needsFaceTrackCanvas, ref, ratio, getCenterX]);
+    }, [needsFaceTrackCanvas, ref, ratio, getCenterX, videoSrc]);
 
     return (
       <div
@@ -808,46 +871,32 @@ const VideoUploadComponent = forwardRef<HTMLVideoElement, VideoUploadProps>(
       >
         {videoSrc ? (
           <div className="relative flex flex-col items-center justify-center w-full">
-            <div
-              className={cn(
-                "relative mx-auto flex flex-col",
-                ratio === "16:9" ? "w-full" : "w-auto",
-              )}
-            >
+            <div data-player className="relative mx-auto flex w-full flex-col">
               <div
                 ref={videoContainerRef}
-                className={cn(
-                  "relative flex justify-center",
-                  ratio === "16:9" && "max-h-[45vh] lg:max-h-[500px]",
-                  // Clip the CSS zoom transform so a "close" cut doesn't bleed
-                  // over the captions/controls sitting below the video box.
-                  autoZoomEnabled && "overflow-hidden",
-                )}
+                data-video-frame
+                className="relative flex w-full justify-center overflow-hidden bg-black"
                 style={{
                   aspectRatio: ratio === "16:9" ? "16/9" : "9/16",
                 }}
               >
+                {/* Keep the source frame visible until an overlay has drawn. */}
                 <video
                   ref={ref}
                   src={videoSrc}
                   playsInline
                   preload="auto"
                   className={cn(
-                    ratio === "16:9"
-                      ? "object-contain w-full max-w-4xl max-h-[45vh] lg:max-h-[500px]"
-                      : ratio === "9:16" && !zoomPortrait
-                        ? "object-cover h-[45vh] max-h-[45vh] lg:h-[500px] lg:max-h-[500px]"
-                        : "object-contain h-[45vh] max-h-[45vh] lg:h-[500px] lg:max-h-[500px]",
-                    needsFaceTrackCanvas && "invisible",
+                    "absolute inset-0 block h-full w-full",
+                    ratio === "9:16" && !zoomPortrait
+                      ? "object-cover"
+                      : "object-contain",
                   )}
                   onTimeUpdate={handleTimeUpdate}
                   onPlay={() => setIsPlaying(true)}
                   onPause={() => setIsPlaying(false)}
-                  onLoadedMetadata={(e) => {
-                    const nextDuration = e.currentTarget.duration;
-                    setDuration(nextDuration);
-                    onDurationChange?.(nextDuration);
-                  }}
+                  onLoadedMetadata={handleDurationChange}
+                  onDurationChange={handleDurationChange}
                   onClick={() => {
                     if (!compositingActive && !needsFaceTrackCanvas) {
                       const videoEl =
@@ -867,14 +916,7 @@ const VideoUploadComponent = forwardRef<HTMLVideoElement, VideoUploadProps>(
                 {compositingActive && (
                   <canvas
                     ref={canvasRef}
-                    className={cn(
-                      "absolute inset-0 cursor-pointer",
-                      ratio === "16:9"
-                        ? "w-full max-w-4xl max-h-[45vh] lg:max-h-[500px] mx-auto"
-                        : ratio === "9:16" && zoomPortrait
-                          ? "h-[45vh] max-h-[45vh] lg:h-[500px] lg:max-h-[500px] mx-auto"
-                          : "h-[45vh] max-h-[45vh] lg:h-[500px] lg:max-h-[500px] mx-auto",
-                    )}
+                    className="absolute inset-0 h-full w-full cursor-pointer"
                     style={{
                       aspectRatio: ratio === "16:9" ? "16/9" : "9/16",
                       ...autoZoomStyle,
@@ -893,12 +935,7 @@ const VideoUploadComponent = forwardRef<HTMLVideoElement, VideoUploadProps>(
                 {needsFaceTrackCanvas && (
                   <canvas
                     ref={faceTrackCanvasRef}
-                    className={cn(
-                      "absolute inset-0 cursor-pointer",
-                      ratio === "9:16" && zoomPortrait
-                        ? "h-[45vh] max-h-[45vh] lg:h-[500px] lg:max-h-[500px] mx-auto"
-                        : "h-[45vh] max-h-[45vh] lg:h-[500px] lg:max-h-[500px] mx-auto",
-                    )}
+                    className="absolute inset-0 h-full w-full cursor-pointer"
                     style={{
                       aspectRatio: "9/16",
                       ...autoZoomStyle,
@@ -912,11 +949,6 @@ const VideoUploadComponent = forwardRef<HTMLVideoElement, VideoUploadProps>(
                       }
                     }}
                   />
-                )}
-                {isSkipping && (
-                  <div className="absolute top-4 right-4 bg-black bg-opacity-75 text-white px-3 py-1 rounded-md text-sm font-medium z-10">
-                    Skipping disabled segment
-                  </div>
                 )}
                 {/* Branding watermark DOM overlay (non-compositing mode) */}
                 {subtitleStyle.brandingWatermark !== false &&
@@ -935,8 +967,9 @@ const VideoUploadComponent = forwardRef<HTMLVideoElement, VideoUploadProps>(
                       basedsubs.getbasedapps.com
                     </div>
                   )}
-                {/* DOM-based captions: visible when not compositing, invisible hit-targets when compositing + word select active */}
-                {transcript && !compositingActive && (
+                {/* Only depth text needs canvas layers; all other previews share
+                    the same caption sizing, effects, and face placement. */}
+                {transcript && !isDynamicMode && (
                   <VideoCaption
                     transcript={transcript}
                     currentTime={localTime}
@@ -949,9 +982,14 @@ const VideoUploadComponent = forwardRef<HTMLVideoElement, VideoUploadProps>(
                 )}
               </div>
               {/* Custom player controls — always visible */}
-              <div className="flex items-center gap-2 px-3 py-2 bg-black/90 rounded-b-lg w-full">
+              <div
+                data-player-controls
+                className="flex w-full shrink-0 items-center gap-2 rounded-b-lg bg-black/90 px-3 py-2"
+              >
                 {/* Play/Pause */}
                 <button
+                  type="button"
+                  aria-label={isPlaying ? "Pause preview" : "Play preview"}
                   onClick={() => {
                     const videoEl =
                       ref && typeof ref !== "function" ? ref.current : null;
@@ -983,13 +1021,15 @@ const VideoUploadComponent = forwardRef<HTMLVideoElement, VideoUploadProps>(
                     Calls onTimeUpdate during drag so subtitles stay in sync. */}
                 <div
                   role="slider"
-                  tabIndex={0}
+                  tabIndex={duration > 0 ? 0 : -1}
+                  aria-disabled={duration <= 0}
                   aria-valuemin={0}
                   aria-valuemax={duration || 1}
                   aria-valuenow={currentTime}
                   aria-label="Seek"
                   className="flex-1 h-8 flex items-center cursor-pointer touch-none select-none"
                   onPointerDown={(e) => {
+                    if (duration <= 0) return;
                     seekingRef.current = true;
                     e.currentTarget.setPointerCapture(e.pointerId);
 
@@ -1027,6 +1067,7 @@ const VideoUploadComponent = forwardRef<HTMLVideoElement, VideoUploadProps>(
                     onTimeUpdate?.(time);
                   }}
                   onPointerUp={() => {
+                    if (!seekingRef.current) return;
                     seekingRef.current = false;
                     const videoEl =
                       ref && typeof ref !== "function" ? ref.current : null;
@@ -1046,6 +1087,7 @@ const VideoUploadComponent = forwardRef<HTMLVideoElement, VideoUploadProps>(
                     }
                   }}
                   onKeyDown={(e) => {
+                    if (duration <= 0) return;
                     const videoEl =
                       ref && typeof ref !== "function" ? ref.current : null;
                     if (!videoEl) return;
@@ -1074,11 +1116,13 @@ const VideoUploadComponent = forwardRef<HTMLVideoElement, VideoUploadProps>(
 
                 {/* Duration */}
                 <span className="text-white text-xs tabular-nums shrink-0">
-                  {formatTime(duration)}
+                  {duration > 0 ? formatTime(duration) : "--:--"}
                 </span>
 
                 {/* Mute toggle */}
                 <button
+                  type="button"
+                  aria-label={isMuted ? "Unmute video" : "Mute video"}
                   onClick={() => {
                     const videoEl =
                       ref && typeof ref !== "function" ? ref.current : null;

@@ -45,13 +45,10 @@ export function CameraRecorder({
     closeCamera,
   } = useCameraRecording();
 
-  const hasOpenedRef = useRef(false);
+  const initialOpenCameraRef = useRef(openCamera);
   useEffect(() => {
-    if (!hasOpenedRef.current) {
-      hasOpenedRef.current = true;
-      openCamera();
-    }
-  }, [openCamera]);
+    void initialOpenCameraRef.current();
+  }, []);
 
   const handleCancel = () => {
     closeCamera();

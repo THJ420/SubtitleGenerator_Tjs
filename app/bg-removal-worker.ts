@@ -12,7 +12,9 @@ class PipelineSingleton {
   static instance: Promise<any> | null = null;
 
   static resetInstance(): void {
+    const previous = this.instance;
     this.instance = null;
+    void previous?.then((pipeline) => pipeline.dispose()).catch(() => {});
   }
 
   static async getInstance(
@@ -92,8 +94,12 @@ async function handleLoad({ device = "webgpu" }: { device?: DeviceType }) {
     await loadPromise;
     self.postMessage({ status: "ready" });
   } catch (error) {
-    console.error("[bg-removal-worker] Error loading model:", error);
     loadPromise = null;
+    if (device === "webgpu") {
+      await handleLoad({ device: "wasm" });
+      return;
+    }
+    console.error("[bg-removal-worker] Error loading model:", error);
     self.postMessage({
       status: "error",
       data: error instanceof Error ? error.message : "Unknown error occurred",
@@ -106,11 +112,13 @@ async function handleProcessFrame({
   width,
   height,
   frameIndex,
+  requestId,
 }: {
   imageData: Uint8ClampedArray;
   width: number;
   height: number;
   frameIndex: number;
+  requestId: number;
 }) {
   try {
     if (loadPromise) {
@@ -165,6 +173,7 @@ async function handleProcessFrame({
       {
         status: "mask-ready",
         frameIndex,
+        requestId,
         mask,
         width: maskWidth,
         height: maskHeight,
@@ -182,6 +191,7 @@ async function handleProcessFrame({
       status: "error",
       data: error instanceof Error ? error.message : "Unknown error occurred",
       frameIndex,
+      requestId,
     });
   }
 }
