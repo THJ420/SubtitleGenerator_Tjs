@@ -1,4 +1,5 @@
 "use client";
+import { drawPortraitLayout, type TrackedFace } from "@/lib/portrait-layout";
 
 import {
   useCallback,
@@ -107,6 +108,11 @@ interface VideoUploadProps {
   } | null;
   currentTime?: number;
   subtitleStyle: SubtitleStyle;
+  onSubtitleStyleChange?: (
+    change: Partial<SubtitleStyle>,
+    timestamp: [number, number],
+    globally?: boolean,
+  ) => void;
   mode: "word" | "phrase";
   ratio: "16:9" | "9:16";
   zoomPortrait: boolean;
@@ -114,6 +120,10 @@ interface VideoUploadProps {
   bgRemovalReady?: boolean;
   getMaskAtTime?: (time: number, fps?: number) => MaskData | null;
   getCenterX?: () => number;
+  getFaces?: () => TrackedFace[];
+  stackedPortrait?: boolean;
+  portraitSwapped?: boolean;
+  portraitZoom?: number;
   isFaceTrackingActive?: boolean;
   cropTrackingEnabled?: boolean;
   silenceRemovalRanges?: TimeRange[];
@@ -131,6 +141,7 @@ const VideoUploadComponent = forwardRef<HTMLVideoElement, VideoUploadProps>(
       transcript,
       currentTime = 0,
       subtitleStyle,
+      onSubtitleStyleChange,
       mode,
       ratio,
       zoomPortrait,
@@ -138,6 +149,10 @@ const VideoUploadComponent = forwardRef<HTMLVideoElement, VideoUploadProps>(
       bgRemovalReady = false,
       getMaskAtTime,
       getCenterX,
+      getFaces,
+      stackedPortrait = false,
+      portraitSwapped = false,
+      portraitZoom = 1,
       isFaceTrackingActive = false,
       cropTrackingEnabled = false,
       silenceRemovalRanges = [],
@@ -224,8 +239,7 @@ const VideoUploadComponent = forwardRef<HTMLVideoElement, VideoUploadProps>(
       bgRemovalReady && subtitleStyle.backgroundRemovalEnabled && getMaskAtTime;
     const compositingActive = isDynamicMode || isBgRemovalMode;
     const needsFaceTrackCanvas =
-      cropTrackingEnabled &&
-      isFaceTrackingActive &&
+      (stackedPortrait || (cropTrackingEnabled && isFaceTrackingActive)) &&
       !compositingActive &&
       ratio === "9:16";
     const silenceRemovalPlan = useMemo(
@@ -798,6 +812,7 @@ const VideoUploadComponent = forwardRef<HTMLVideoElement, VideoUploadProps>(
       if (!ctx) return;
 
       let lastRenderedTime = -1;
+      let lastFaces: TrackedFace[] | undefined;
 
       const render = () => {
         const displayWidth = canvas.clientWidth;
@@ -815,11 +830,18 @@ const VideoUploadComponent = forwardRef<HTMLVideoElement, VideoUploadProps>(
         const time = videoEl.currentTime;
         const sizeChanged =
           canvas.width !== displayWidth || canvas.height !== displayHeight;
-        if (videoEl.paused && time === lastRenderedTime && !sizeChanged) {
+        const faces = getFaces?.();
+        if (
+          (!stackedPortrait || faces === lastFaces) &&
+          videoEl.paused &&
+          time === lastRenderedTime &&
+          !sizeChanged
+        ) {
           faceTrackAnimFrameRef.current = requestAnimationFrame(render);
           return;
         }
         lastRenderedTime = time;
+        lastFaces = faces;
 
         if (sizeChanged) {
           canvas.width = displayWidth;
@@ -847,7 +869,21 @@ const VideoUploadComponent = forwardRef<HTMLVideoElement, VideoUploadProps>(
           sy = Math.round((vh - sh) / 2);
         }
 
-        ctx.drawImage(videoEl, sx, sy, sw, sh, 0, 0, w, h);
+        if (stackedPortrait) {
+          drawPortraitLayout(
+            ctx,
+            videoEl,
+            vw,
+            vh,
+            w,
+            h,
+            faces ?? [],
+            portraitSwapped,
+            portraitZoom,
+          );
+        } else {
+          ctx.drawImage(videoEl, sx, sy, sw, sh, 0, 0, w, h);
+        }
         faceTrackAnimFrameRef.current = requestAnimationFrame(render);
       };
 
@@ -859,7 +895,17 @@ const VideoUploadComponent = forwardRef<HTMLVideoElement, VideoUploadProps>(
           faceTrackAnimFrameRef.current = 0;
         }
       };
-    }, [needsFaceTrackCanvas, ref, ratio, getCenterX, videoSrc]);
+    }, [
+      needsFaceTrackCanvas,
+      ref,
+      ratio,
+      getCenterX,
+      videoSrc,
+      stackedPortrait,
+      portraitSwapped,
+      portraitZoom,
+      getFaces,
+    ]);
 
     const watermark = getBrandingWatermarkMetrics(
       containerWidth,
@@ -986,6 +1032,13 @@ const VideoUploadComponent = forwardRef<HTMLVideoElement, VideoUploadProps>(
                     ratio={ratio}
                     getFaceX={getCenterX}
                     containerWidth={containerWidth}
+                    onStyleChange={
+                      isPlaying ? undefined : onSubtitleStyleChange
+                    }
+                    onInteractionStart={() => {
+                      if (ref && typeof ref !== "function")
+                        ref.current?.pause();
+                    }}
                   />
                 )}
               </div>

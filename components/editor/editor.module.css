@@ -12,11 +12,11 @@
 }
 .header {
   flex-shrink: 0;
-  height: 76px;
+  height: 56px;
   display: flex;
   align-items: center;
-  gap: 24px;
-  padding: 12px 32px;
+  gap: 16px;
+  padding: 8px 20px;
   border-bottom: 1px solid #e9e9ec;
 }
 .brand {
@@ -29,8 +29,8 @@
   white-space: nowrap;
 }
 .brandMark {
-  width: 39px;
-  height: 39px;
+  width: 34px;
+  height: 34px;
   display: grid;
   place-items: center;
   background: #10131d;
@@ -41,7 +41,7 @@
   box-shadow: 0 2px 4px #15162915;
 }
 .projectName {
-  padding-left: 24px;
+  padding-left: 16px;
   border-left: 1px solid #dddde2;
   font-size: 13px;
   color: #73768b;
@@ -55,6 +55,7 @@
   align-items: center;
   gap: 10px;
   margin-left: auto;
+  flex-shrink: 0;
 }
 .headerActions > button {
   height: 38px;
@@ -81,8 +82,8 @@
 .workspace {
   display: grid;
   grid-template-columns: 72px 306px minmax(0, 1fr);
-  gap: 14px;
-  padding: 16px 24px 16px 12px;
+  gap: 12px;
+  padding: 10px 16px 10px 10px;
   max-width: 2000px;
   margin: auto;
   width: 100%;
@@ -232,7 +233,7 @@
   position: relative;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 8px;
 }
 .preview {
   position: relative;
@@ -240,8 +241,8 @@
   display: flex;
   flex-direction: column;
   border: 1px solid #e8e8ec;
-  border-radius: 19px;
-  padding: 15px;
+  border-radius: 16px;
+  padding: 8px;
   background:
     radial-gradient(
       ellipse 48% 75% at -9% 34%,
@@ -262,23 +263,16 @@
   min-height: 0;
 }
 .previewToolbar {
-  flex-shrink: 0;
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  position: relative;
-  z-index: 2;
-}
-.previewToolbar > div {
-  display: flex;
-  align-items: center;
-  gap: 10px;
+  justify-content: center;
+  gap: 8px;
+  min-width: 0;
 }
 .previewToolbar button {
-  height: 38px;
-  background: #ffffffed;
-  box-shadow: 0 4px 12px #25253805;
+  height: 30px;
+  font-size: 12px;
+  background: #fff;
 }
 .videoStage {
   min-height: 300px;
@@ -286,7 +280,7 @@
   display: flex;
   justify-content: center;
   align-items: center;
-  padding: 16px 0 8px;
+  padding: 4px 0;
   flex: 1;
 }
 .videoUpload {
@@ -295,7 +289,7 @@
   overflow: hidden;
   box-shadow: 0 9px 24px #1c213319;
   width: 100%;
-  max-width: 900px;
+  max-width: none;
 }
 .preview[data-ratio="9:16"] .videoUpload {
   width: min(100%, 274px);
@@ -307,16 +301,17 @@
 .wordPopover {
   position: absolute;
   z-index: 20;
-  right: 8px;
-  top: 10px;
-  width: min(330px, 95%);
+  left: 8px;
+  top: 8px;
+  width: min(330px, calc(100% - 16px));
+  max-height: calc(100% - 16px);
 }
 .wordChips {
   display: flex;
   flex-shrink: 0;
   gap: 5px;
   align-items: center;
-  height: 32px;
+  min-height: 40px;
   min-width: 0;
   overflow-x: auto;
   scrollbar-width: thin;
@@ -332,9 +327,21 @@
   margin-right: auto;
 }
 .wordChips > span {
-  font-size: 10px;
-  color: #6d7187;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 9px;
+  border-radius: 8px;
+  background: #fff3a3;
+  font-size: 12px;
+  font-weight: 700;
+  color: #292719;
   margin-right: 4px;
+}
+.wordChipsHint {
+  font-size: 12px;
+  color: #63677a;
+  margin-block: 0;
 }
 .wordChips button {
   background: white;
@@ -344,6 +351,7 @@
   border-color: #efd300;
 }
 .timeline {
+  container-type: inline-size;
   flex-shrink: 0;
   background: #fff;
   border: 1px solid #e9e9ee;
@@ -352,7 +360,8 @@
   box-shadow: 0 4px 20px #23233d03;
 }
 .timelineTransport {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
   align-items: center;
   gap: 14px;
   height: 49px;
@@ -365,8 +374,14 @@
 .timelineTransport strong {
   color: #141622;
 }
-.timelineTransport > button {
+.timelinePlayback > button {
   border-radius: 50%;
+}
+.timelinePlayback {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
 }
 .timelineClock {
   white-space: nowrap;
@@ -605,39 +620,14 @@
 .timelineFooter > span:last-child {
   white-space: nowrap;
 }
-.editorBottom {
-  flex-shrink: 0;
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-  align-items: center;
-  padding: 5px 0;
-}
-.editorBottom > span {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 10px;
-  color: #787b90;
-}
-.editorBottom > div {
-  display: flex;
-  gap: 10px;
-}
-.editorBottom button {
-  height: 38px;
-  padding-inline: 15px;
-  border-radius: 24px;
-  font-size: 12px;
-}
-.editorBottom .exportButton {
+.headerActions .exportButton {
   background: #ffe600;
   color: #16170b;
   box-shadow: 0 4px 9px #ccb90020;
 }
 .exportProgress {
   position: absolute;
-  bottom: 58px;
+  bottom: 8px;
   right: 0;
   z-index: 25;
   width: min(100%, 440px);
@@ -660,20 +650,33 @@
 .exportProgress button {
   margin-top: 8px;
 }
-.transcribingBanner {
-  position: absolute;
-  top: 62px;
-  left: 15px;
-  right: 15px;
-  z-index: 10;
+.headerProgress {
   display: flex;
-  gap: 10px;
   align-items: center;
-  background: #fff6cd;
+  justify-content: center;
+  gap: 8px;
+  min-width: 0;
+  margin-left: auto;
+  padding: 5px 10px;
   border: 1px solid #f4e6a6;
-  padding: 10px 14px;
-  border-radius: 10px;
+  border-radius: 8px;
+  background: #fff6cd;
   font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.headerProgressLabel {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.headerProgressTime,
+.headerProgress strong {
+  flex-shrink: 0;
+}
+.headerProgress progress {
+  width: 65px;
+  height: 5px;
+  accent-color: #d6b900;
 }
 .emptyPrompt {
   text-align: center;
@@ -708,7 +711,7 @@
   border-radius: 20px;
   box-shadow: 0 3px 12px #14132a03;
   background:
-    radial-gradient(ellipse at top right, #edeaff, transparent 36%), #ffffff;
+    radial-gradient(ellipse at top right, #fff7cb, transparent 36%), #ffffff;
 }
 .processingHeading {
   display: flex;
@@ -727,8 +730,8 @@
 .processingIcon {
   flex: 0 0 60px;
   height: 60px;
-  background: #f0eaff;
-  color: #8656e6;
+  background: #fff0a3;
+  color: #947600;
   display: grid;
   place-items: center;
   border-radius: 17px;
@@ -819,12 +822,12 @@
   margin-top: 4px;
 }
 .processingStep[data-active="true"] {
-  background: #f6f1ff;
-  border-color: #dfd0ff;
+  background: #fff9d9;
+  border-color: #eed34c;
 }
 .processingStep[data-active="true"] > span {
-  background: #ede3ff;
-  color: #8250e7;
+  background: #fff0a3;
+  color: #947600;
 }
 .processingStep[data-complete="true"] > span {
   background: #e4f8ee;
@@ -917,17 +920,11 @@
     padding-right: 12px;
   }
   .header {
-    padding: 12px 20px;
+    padding: 8px 16px;
     gap: 16px;
   }
-  .editorBottom > span {
+  .headerProgress progress {
     display: none;
-  }
-  .editorBottom {
-    justify-content: flex-end;
-  }
-  .previewToolbar {
-    flex-wrap: wrap;
   }
   .processingDevice {
     display: none;
@@ -953,20 +950,16 @@
   }
   .sidebar[data-expanded="true"] {
     position: fixed;
-    inset: 72px 10px 10px;
+    inset: 58px 10px 10px;
     z-index: 40;
     height: auto;
     background: white;
     box-shadow: 0 8px 50px #15162822;
   }
-  .wordPopover {
-    max-height: 60dvh;
-    overflow-y: auto;
-  }
   .header {
-    height: 66px;
-    gap: 10px;
-    padding: 10px 14px;
+    height: 52px;
+    gap: 8px;
+    padding: 8px 10px;
   }
   .brand {
     gap: 8px;
@@ -1009,11 +1002,6 @@
   .timeline {
     order: 1;
   }
-  .editorBottom {
-    order: 2;
-    justify-content: center;
-    padding: 0;
-  }
   .rail {
     order: 3;
     flex-direction: row;
@@ -1048,7 +1036,7 @@
   }
   .videoStage {
     min-height: 0;
-    padding: 12px 0 5px;
+    padding: 4px 0;
   }
   .videoUpload {
     max-width: 560px;
@@ -1065,13 +1053,12 @@
     font-size: 10px;
     padding-inline: 7px;
   }
-  .previewToolbar > div {
+  .headerProgress {
     gap: 5px;
+    padding: 4px 6px;
   }
-  .previewToolbar > div > button:last-child {
-    width: 85px;
-  }
-  .previewToolbar > div > button:first-child {
+  .headerProgressLabel,
+  .headerProgressTime {
     display: none;
   }
   .timelineTracks {
@@ -1092,10 +1079,24 @@
     display: none;
   }
   .timelineTransport {
-    height: 42px;
-    gap: 9px;
+    height: auto;
+    min-height: 42px;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 6px;
+    padding: 6px 9px;
     font-size: 10px;
   }
+  .timelineZoom {
+    grid-column: 1 / -1;
+    justify-self: end;
+  }
+  .timelinePlayback {
+    gap: 6px;
+  }
+  .previewToolbar button {
+    height: 28px;
+  }
+
   .captionTrack button {
     font-size: 11px;
     padding: 2px 4px;
@@ -1158,5 +1159,276 @@
   }
   .processingBenefits p {
     font-size: 10px;
+  }
+}
+
+@container (max-width: 620px) {
+  .timelineTransport {
+    grid-template-columns: minmax(0, 1fr) auto;
+    height: auto;
+    min-height: 44px;
+    gap: 6px;
+  }
+  .timelineZoom {
+    grid-column: 1 / -1;
+    justify-self: end;
+  }
+}
+
+.settingHint {
+  margin-top: -8px;
+  color: #63677a;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+/* Mobile editing occupies the visual viewport; only the tool dock scrolls. */
+@media (max-width: 767px) {
+  .editor[data-editing="true"] {
+    position: fixed;
+    inset: 0;
+    height: var(--mobile-height, 100dvh);
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    overscroll-behavior: none;
+  }
+  .editor[data-editing="true"] .workspace {
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+    padding: 0 6px;
+    gap: 4px;
+  }
+  .editor[data-editing="true"] .preview {
+    flex: 1;
+    min-height: 0;
+    padding: 4px;
+    border-radius: 8px;
+  }
+  .editor[data-editing="true"] .videoStage {
+    container-type: size;
+    min-height: 0;
+    padding: 0;
+  }
+  .editor[data-editing="true"] .videoUpload {
+    width: min(100cqw, calc(100cqh * 16 / 9));
+    max-width: none;
+    border-radius: 4px;
+    box-shadow: none;
+  }
+  .editor[data-editing="true"] .preview[data-ratio="9:16"] .videoUpload {
+    width: min(100cqw, calc(100cqh * 9 / 16));
+  }
+  .editor[data-editing="true"] [data-player-controls] {
+    display: none;
+  }
+  .wordChips {
+    min-height: 36px;
+    gap: 4px;
+  }
+  .wordChips > span {
+    font-size: 0;
+    padding: 6px;
+    gap: 0;
+  }
+  .wordChips > span::after {
+    content: "Edit words";
+    font-size: 11px;
+    margin-left: 4px;
+  }
+  .wordChipsHint {
+    font-size: 10px;
+  }
+  .timeline {
+    order: 1;
+    border-radius: 8px;
+  }
+  .timelineTransport {
+    display: flex;
+    height: 38px;
+    min-height: 38px;
+    padding: 2px 6px;
+    gap: 4px;
+  }
+  .timelinePlayback {
+    flex: 1;
+  }
+  .previewToolbar {
+    flex-shrink: 0;
+  }
+  .timelineZoom {
+    margin-left: 0;
+    gap: 0;
+  }
+  .timelineZoom input,
+  .timelineZoom .timelineFit {
+    display: none;
+  }
+  .timelineZoom button {
+    width: 26px;
+    height: 32px;
+  }
+  .previewToolbar > button:first-child {
+    display: none;
+  }
+  .timelineTracks {
+    grid-template-columns: 48px minmax(0, 1fr);
+    padding: 0 5px;
+    gap: 4px;
+  }
+  .trackLabels {
+    grid-template-rows: 22px 32px 30px;
+    gap: 4px;
+    font-size: 9px;
+  }
+  .trackLabels svg {
+    display: none;
+  }
+  .ruler {
+    height: 22px;
+  }
+  .captionTrack,
+  .captionTrack button {
+    height: 32px;
+  }
+  .captionTrack,
+  .videoTrack {
+    margin-top: 4px;
+  }
+  .videoTrack {
+    height: 30px;
+  }
+  .timelineFooter {
+    display: none;
+  }
+  .sidebar,
+  .sidebar:has(.transcriptPanel) {
+    display: none;
+    order: 2;
+    flex: 0 0 min(29dvh, 240px);
+    height: min(29dvh, 240px);
+    min-height: 0;
+    padding: 0 10px 10px;
+    border-radius: 10px 10px 0 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+  .sidebar[data-mobile-open="true"] {
+    display: block;
+  }
+  .panelTools {
+    position: sticky;
+    top: 0;
+    z-index: 5;
+    background: white;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin: 0 0 6px;
+    min-height: 36px;
+    font-size: 13px;
+  }
+  .panelTools button {
+    min-height: 36px;
+    color: #695a00;
+  }
+  .panelHeading {
+    display: none;
+  }
+  .videoSettings {
+    gap: 14px;
+  }
+  .mobileWordPanel {
+    order: 2;
+    flex: 0 0 min(29dvh, 240px);
+    min-height: 0;
+    overflow: auto;
+    overscroll-behavior: contain;
+    background: white;
+    border-radius: 10px 10px 0 0;
+  }
+  .mobileWordPanel > div {
+    width: 100%;
+    max-height: none;
+    box-shadow: none;
+    border: 0;
+  }
+  .rail {
+    order: 3;
+    flex: 0 0 auto;
+    min-height: 52px;
+    padding-bottom: env(safe-area-inset-bottom);
+    gap: 0;
+    border-top: 1px solid #e9e9ee;
+    border-bottom: 0;
+  }
+  .rail button {
+    flex-direction: column;
+    gap: 2px;
+    height: 48px;
+    border-radius: 8px;
+    font-size: 10px;
+  }
+  .rail .aboutButton {
+    display: none;
+  }
+  .header {
+    height: 46px;
+    padding: 4px 8px;
+  }
+  .brand {
+    font-size: 0;
+    gap: 0;
+  }
+  .headerActions {
+    gap: 4px;
+  }
+  .exportProgress {
+    bottom: calc(58px + env(safe-area-inset-bottom));
+  }
+}
+@media (max-width: 767px) {
+  .editor[data-short="true"] .sidebar,
+  .editor[data-short="true"] .mobileWordPanel {
+    flex-basis: 110px;
+    height: 110px;
+  }
+  .editor[data-short="true"] .wordChips {
+    display: none;
+  }
+  .editor[data-short="true"] .rail button {
+    height: 36px;
+  }
+  .editor[data-short="true"] .rail {
+    min-height: 36px;
+  }
+  .editor[data-short="true"] .captionTrack,
+  .editor[data-short="true"] .captionTrack button {
+    height: 24px;
+  }
+  .editor[data-short="true"] .videoTrack {
+    height: 24px;
+  }
+  .editor[data-short="true"] .trackLabels {
+    grid-template-rows: 22px 24px 24px;
+  }
+}
+@media (max-width: 767px) {
+  .mobileWordPanel :global(.epr-category-nav) {
+    display: none;
+  }
+  .mobileWordPanel :global(.EmojiPickerReact) {
+    --epr-header-padding: 6px;
+    --epr-category-label-height: 22px;
+    --epr-emoji-size: 28px;
+    --epr-emoji-padding: 4px;
+  }
+}
+@media (max-width: 767px) {
+  .editor[data-short="true"] .mobileWordPanel {
+    flex-basis: 150px;
+    height: 150px;
   }
 }

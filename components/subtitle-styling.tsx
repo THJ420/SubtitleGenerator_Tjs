@@ -44,6 +44,8 @@ function rgbaToHex(rgba: string): string {
 }
 
 export interface SubtitleStyle {
+  /** Center within the output video frame, stored as fractions (0–1). */
+  customPosition?: { x: number; y: number };
   uppercase?: boolean;
   wordEmphasisBackgroundColor?: string;
   fontFamily: string; // Note: FFmpeg uses single font file, family switching limited
@@ -910,15 +912,27 @@ export function SubtitleStyling({
         {!style.dynamicEnabled && (
           <div className="space-y-2">
             <label className="text-sm font-medium block">Position</label>
+            <p className="text-xs text-muted-foreground">
+              Drag text in the preview to move it. Drag a corner to resize.
+              Presets set the default for captions without custom placement.
+            </p>
             <div className="grid grid-cols-3 gap-2">
               {(["top", "middle", "bottom"] as const).map((pos) => {
-                const isActive = style.position === pos;
+                const isActive =
+                  !style.customPosition && style.position === pos;
                 return (
                   <button
                     key={pos}
                     type="button"
                     aria-pressed={isActive}
-                    onClick={() => onChange({ ...style, position: pos })}
+                    onClick={() =>
+                      onChange({
+                        ...style,
+                        position: pos,
+                        customPosition: undefined,
+                        verticalOffset: 0,
+                      })
+                    }
                     className={`flex flex-col items-center gap-1 rounded-lg border px-2 py-2 text-xs font-medium transition-all ${
                       isActive
                         ? "border-yellow-400 bg-yellow-50 text-foreground"

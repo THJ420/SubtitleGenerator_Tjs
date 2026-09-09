@@ -12,6 +12,7 @@ import {
   type KeyboardEvent,
   type PointerEvent,
   type RefObject,
+  type ReactNode,
 } from "react";
 import { Captions, Film, Pause, Play, ZoomIn, ZoomOut } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -42,6 +43,7 @@ interface EditorTimelineProps {
   silenceRemovalRanges?: TimeRange[];
   onSeek: (time: number) => void;
   onEdit: () => void;
+  previewControls?: ReactNode;
 }
 type Scrub = {
   clientX: number;
@@ -65,6 +67,7 @@ export const EditorTimeline = memo(function EditorTimeline({
   silenceRemovalRanges = EMPTY_RANGES,
   onSeek,
   onEdit,
+  previewControls,
 }: EditorTimelineProps) {
   const [playing, setPlaying] = useState(false);
   const [requestedScale, setRequestedScale] = useState<number | null>(160);
@@ -382,22 +385,32 @@ export const EditorTimeline = memo(function EditorTimeline({
   return (
     <section className={styles.timeline} aria-label="Video timeline">
       <div className={styles.timelineTransport}>
-        <Button
-          variant="outline"
-          size="icon"
-          aria-label={playing ? "Pause video" : "Play video"}
-          onClick={() => {
-            const video = videoRef.current;
-            if (!video) return;
-            if (video.paused) void video.play().catch(() => setPlaying(false));
-            else video.pause();
-          }}
+        <div className={styles.timelinePlayback}>
+          <Button
+            variant="outline"
+            size="icon"
+            aria-label={playing ? "Pause video" : "Play video"}
+            onClick={() => {
+              const video = videoRef.current;
+              if (!video) return;
+              if (video.paused)
+                void video.play().catch(() => setPlaying(false));
+              else video.pause();
+            }}
+          >
+            {playing ? <Pause /> : <Play fill="currentColor" />}
+          </Button>
+          <span className={styles.timelineClock}>
+            <strong ref={clockRef}>0:00</strong> / {formatTime(safeDuration)}
+          </span>
+        </div>
+        <div
+          className={styles.previewToolbar}
+          role="group"
+          aria-label="Video framing"
         >
-          {playing ? <Pause /> : <Play fill="currentColor" />}
-        </Button>
-        <span className={styles.timelineClock}>
-          <strong ref={clockRef}>0:00</strong> / {formatTime(safeDuration)}
-        </span>
+          {previewControls}
+        </div>
         <div className={styles.timelineZoom}>
           <button
             type="button"

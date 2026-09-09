@@ -1,3 +1,8 @@
+import {
+  orderFaces,
+  createFaceSmoother,
+  type TrackedFace,
+} from "@/lib/portrait-layout";
 import { useRef, useCallback, useState, useEffect } from "react";
 import { seekVideo, withAbortSignal } from "@/lib/media-lifecycle";
 import {
@@ -14,6 +19,8 @@ const WASM_CDN =
 
 export interface UseFaceTrackingReturn {
   isLoading: boolean;
+  faceCount: number;
+  getFaces: () => TrackedFace[];
   startTracking: (videoElement: HTMLVideoElement) => void;
   stopTracking: () => void;
   getCenterX: () => number;
@@ -28,6 +35,9 @@ export interface UseFaceTrackingReturn {
 type FaceDetector = import("@mediapipe/tasks-vision").FaceDetector;
 
 export function useFaceTracking(): UseFaceTrackingReturn {
+  const [faceCount, setFaceCount] = useState(0);
+  const smoothFacesRef = useRef(createFaceSmoother());
+  const facesRef = useRef<TrackedFace[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const detectorRef = useRef<FaceDetector | null>(null);
   const initPromiseRef = useRef<Promise<FaceDetector> | null>(null);
@@ -121,26 +131,19 @@ export function useFaceTracking(): UseFaceTrackingReturn {
         return null;
       }
 
-      if (!result.detections || result.detections.length === 0) return null;
-
-      // Pick the largest face (closest to camera)
-      let best = result.detections[0];
-      let bestArea = 0;
-      for (const det of result.detections) {
-        const bb = det.boundingBox;
-        if (!bb) continue;
-        const area = bb.width * bb.height;
-        if (area > bestArea) {
-          bestArea = area;
-          best = det;
-        }
-      }
-
-      const bb = best.boundingBox;
-      if (!bb) return null;
-
-      // Normalize centerX to 0-1
-      return (bb.originX + bb.width / 2) / video.videoWidth;
+      const boxes = result.detections
+        .map((d) => d.boundingBox)
+        .filter((b): b is NonNullable<typeof b> => !!b)
+        .sort((a, b) => b.width * b.height - a.width * a.height);
+      const faces = boxes.slice(0, 2).map((b) => ({
+        x: (b.originX + b.width / 2) / video.videoWidth,
+        y: (b.originY + b.height / 2) / video.videoHeight,
+      }));
+      return {
+        centerX: faces[0]?.x ?? null,
+        faces: orderFaces(faces),
+        count: boxes.length,
+      };
     },
     [],
   );
@@ -155,6 +158,9 @@ export function useFaceTracking(): UseFaceTrackingReturn {
         trackedSrcRef.current = videoElement.src;
         smoothedCenterXRef.current = 0.5;
         lastTimeRef.current = -1;
+        facesRef.current = [];
+        smoothFacesRef.current = createFaceSmoother();
+        setFaceCount(0);
         timelineRef.current.clear();
       }
 
@@ -179,25 +185,31 @@ export function useFaceTracking(): UseFaceTrackingReturn {
               videoElement.readyState >= 2 &&
               !videoElement.seeking &&
               time !== lastTimeRef.current &&
-              !videoElement.paused
+              !exportControllerRef.current
             ) {
               lastTimeRef.current = time;
               // MediaPipe needs a monotonically increasing timestamp in ms
               const tsMs = performance.now();
-              const rawCx = extractCenterX(detector, videoElement, tsMs);
+              const detection = extractCenterX(detector, videoElement, tsMs);
+              const rawCx = detection?.centerX ?? null;
+              facesRef.current = smoothFacesRef.current(
+                detection?.faces ?? [],
+                time,
+              );
+              setFaceCount(detection?.count ?? 0);
 
               if (rawCx !== null) {
                 smoothedCenterXRef.current = smoothCenterX(
                   smoothedCenterXRef.current,
                   rawCx,
                 );
-                // Bound preview history to eight samples per video second,
-                // including when the user replays or seeks through the video.
-                timelineRef.current.set(Math.floor(time * 8), {
-                  time,
-                  centerX: smoothedCenterXRef.current,
-                });
               }
+              // Record missed detections too, so export does not reuse stale faces.
+              timelineRef.current.set(Math.floor(time * 8), {
+                time,
+                faces: facesRef.current,
+                centerX: smoothedCenterXRef.current,
+              });
               // On no face: hold last position (smoothedCenterXRef stays)
             }
 
@@ -236,6 +248,8 @@ export function useFaceTracking(): UseFaceTrackingReturn {
       timeline.clear();
     };
   }, [stopTracking]);
+
+  const getFaces = useCallback(() => facesRef.current, []);
 
   const getCenterX = useCallback((): number => {
     return smoothedCenterXRef.current;
@@ -291,6 +305,7 @@ export function useFaceTracking(): UseFaceTrackingReturn {
       try {
         const detector = await withAbortSignal(ensureDetector(), exportSignal);
         exportSignal.throwIfAborted();
+        const smoothFaces = createFaceSmoother();
         let stepIndex = 0;
         for (let t = 0; t < duration; t += step) {
           // Report progress
@@ -304,17 +319,20 @@ export function useFaceTracking(): UseFaceTrackingReturn {
           await seekVideo(videoElement, t, exportSignal);
 
           const tsMs = performance.now();
-          const rawCx = extractCenterX(detector, videoElement, tsMs);
+          const detection = extractCenterX(detector, videoElement, tsMs);
+          const rawCx = detection?.centerX ?? null;
+          const faces = smoothFaces(detection?.faces ?? [], t);
           if (rawCx !== null) {
-            timeline.push({ time: t, centerX: rawCx });
+            timeline.push({ time: t, centerX: rawCx, faces });
           } else if (timeline.length > 0) {
             // Hold last known position
             timeline.push({
               time: t,
+              faces,
               centerX: timeline[timeline.length - 1].centerX,
             });
           } else {
-            timeline.push({ time: t, centerX: 0.5 });
+            timeline.push({ time: t, centerX: 0.5, faces });
           }
         }
 
@@ -335,6 +353,8 @@ export function useFaceTracking(): UseFaceTrackingReturn {
 
   return {
     isLoading,
+    faceCount,
+    getFaces,
     startTracking,
     stopTracking,
     getCenterX,

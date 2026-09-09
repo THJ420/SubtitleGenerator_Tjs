@@ -61,6 +61,8 @@ export function formatVttTime(seconds: number): string {
 }
 
 export interface WordStyleOverride {
+  wordPlacement?: import("./caption-placement").CaptionPlacement;
+  phrasePlacement?: import("./caption-placement").CaptionPlacement;
   fontFamily?: string;
   fontSize?: number; // multiplier (e.g. 1.5 = 150% of global)
   color?: string;

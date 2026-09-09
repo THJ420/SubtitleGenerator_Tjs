@@ -10,7 +10,10 @@ import {
   renderSubtitleToCanvas,
   renderDynamicBehindText,
 } from "../lib/render-subtitle";
-import { transcriptToSrt } from "../lib/transcript-utils";
+import {
+  processTranscriptChunks,
+  transcriptToSrt,
+} from "../lib/transcript-utils";
 
 const baseStyle: SubtitleStyle = {
   fontFamily: "Arial, sans-serif",
@@ -64,7 +67,14 @@ const chunk = {
 };
 
 function recordingCanvas() {
-  const text: Array<{ text: string; color: unknown }> = [];
+  const text: Array<{
+    text: string;
+    color: unknown;
+    x: number;
+    y: number;
+    font: unknown;
+    composite: unknown;
+  }> = [];
   const fills: unknown[] = [];
   const measurements: string[] = [];
   const properties: Record<string, unknown> = {
@@ -78,8 +88,15 @@ function recordingCanvas() {
       if (key === "save") return () => stack.push({ ...target });
       if (key === "restore") return () => Object.assign(target, stack.pop());
       if (key === "fillText")
-        return (value: string) =>
-          text.push({ text: value, color: target.fillStyle });
+        return (value: string, x: number, y: number) =>
+          text.push({
+            text: value,
+            color: target.fillStyle,
+            x,
+            y,
+            font: target.font,
+            composite: target.globalCompositeOperation,
+          });
       if (key === "fill") return () => fills.push(target.fillStyle);
       if (key === "measureText")
         return (value: string) => {
@@ -180,10 +197,13 @@ test("active background color works without a full caption background in preview
     );
     for (const recorded of [preview, exported]) {
       assert.deepEqual(recorded.fills, [background]);
-      assert.deepEqual(recorded.text, [
-        { text: "Hello", color: "#000000" },
-        { text: "world", color: "#FFFFFF" },
-      ]);
+      assert.deepEqual(
+        recorded.text.map(({ text, color }) => ({ text, color })),
+        [
+          { text: "Hello", color: "#000000" },
+          { text: "world", color: "#FFFFFF" },
+        ],
+      );
     }
   }
 });
@@ -229,5 +249,209 @@ test("behind-person preview and export honor the case setting", () => {
     const expected = uppercase ? "HELLO WORLD" : "Hello world";
     assert.equal(preview.text.map((item) => item.text).join(" "), expected);
     assert.equal(exported.text.map((item) => item.text).join(" "), expected);
+  }
+});
+
+for (const [width, height] of [
+  [1920, 1080],
+  [1080, 1920],
+]) {
+  test(`manual caption placement and size match both canvas renderers at ${width}x${height}`, () => {
+    const style = {
+      ...baseStyle,
+      fontSize: 48,
+      customPosition: { x: 0.3, y: 0.4 },
+    };
+    const preview = recordingCanvas();
+    const exported = recordingCanvas();
+    renderSubtitleToCanvas(
+      preview.context,
+      transcript,
+      0.5,
+      style,
+      "phrase",
+      width,
+      height,
+    );
+    renderSubtitle(
+      exported.context,
+      chunk,
+      style,
+      { width, height } as HTMLCanvasElement,
+      "phrase",
+      0.5,
+    );
+    for (const recording of [preview, exported]) {
+      assert.ok(recording.text.length > 0);
+      assert.equal(recording.text[0].x, width * 0.3);
+      assert.equal(recording.text[0].y, height * 0.4);
+      assert.match(
+        String(recording.text[0].font),
+        new RegExp(`${Math.round((48 * height) / 500)}px`),
+      );
+    }
+  });
+}
+
+for (const mode of ["word", "phrase"] as const) {
+  test(`local ${mode} placement reaches preview and export without changing the next caption`, () => {
+    const key = mode === "phrase" ? "phrasePlacement" : "wordPlacement";
+    const localTranscript = {
+      text: "Hello world next",
+      chunks: [
+        {
+          text: "Hello",
+          timestamp: [0, 1] as [number, number],
+          styleOverride: {
+            [key]: { customPosition: { x: 0.25, y: 0.3 }, fontSize: 50 },
+          },
+        },
+        { text: "next", timestamp: [4, 5] as [number, number] },
+      ],
+    };
+    const processed = processTranscriptChunks(localTranscript, mode);
+    for (const index of [0, 1]) {
+      const preview = recordingCanvas();
+      const exported = recordingCanvas();
+      const time = index === 0 ? 0.5 : 4.5;
+      renderSubtitleToCanvas(
+        preview.context,
+        localTranscript,
+        time,
+        baseStyle,
+        mode,
+        1000,
+        500,
+      );
+      renderSubtitle(
+        exported.context,
+        processed[index],
+        baseStyle,
+        { width: 1000, height: 500 } as HTMLCanvasElement,
+        mode,
+        time,
+      );
+      for (const recorded of [preview, exported]) {
+        assert.equal(recorded.text[0].x, index === 0 ? 250 : 500);
+        if (index === 0) assert.equal(recorded.text[0].y, 150);
+        assert.match(
+          String(recorded.text[0].font),
+          index === 0 ? /50px/ : /22px/,
+        );
+      }
+    }
+  });
+}
+
+for (const mode of ["word", "phrase"] as const) {
+  test(`${mode} mode exports local font, color, emoji replacement and overlay without emphasis`, () => {
+    const styled = {
+      text: "Hello",
+      timestamp: [0, 2] as [number, number],
+      styleOverride: {
+        color: "#ff0000",
+        fontSize: 2,
+        fontFamily: "Arial",
+        emoji: "🔥",
+        emojiOverlay: "⭐",
+        emojiScale: 1.5,
+      },
+    };
+    const transcript = { text: styled.text, chunks: [styled] };
+    const chunk = processTranscriptChunks(transcript, mode)[0];
+    for (const renderer of ["preview", "export"]) {
+      const recorded = recordingCanvas();
+      if (renderer === "preview")
+        renderSubtitleToCanvas(
+          recorded.context,
+          transcript,
+          1,
+          baseStyle,
+          mode,
+          500,
+          500,
+        );
+      else
+        renderSubtitle(
+          recorded.context,
+          chunk,
+          baseStyle,
+          { width: 500, height: 500 } as HTMLCanvasElement,
+          mode,
+          1,
+        );
+      assert.deepEqual(
+        recorded.text.map((t) => t.text),
+        ["🔥", "⭐"],
+      );
+      assert.equal(recorded.text[0].color, "#ff0000");
+      assert.match(
+        String(recorded.text[0].font),
+        /79\.19999999999999px|79\.2px/,
+      );
+      assert.match(
+        String(recorded.text[1].font),
+        /92\.39999999999999px|92\.4px/,
+      );
+    }
+  });
+  test(`${mode} mode honors local knockout without enabling phrase emphasis`, () => {
+    const styled = {
+      text: "Hello",
+      timestamp: [0, 2] as [number, number],
+      styleOverride: { effect: "knockout" as const },
+    };
+    const transcript = { text: styled.text, chunks: [styled] };
+    const chunk = processTranscriptChunks(transcript, mode)[0];
+    const recorded = recordingCanvas();
+    renderSubtitle(
+      recorded.context,
+      chunk,
+      baseStyle,
+      { width: 500, height: 500 } as HTMLCanvasElement,
+      mode,
+      1,
+    );
+    assert.equal(recorded.text[0].color, "#FFFFFF");
+    assert.equal(recorded.text[0].composite, "difference");
+  });
+}
+
+test("word styling remains active when a phrase split setting is retained", () => {
+  const word = {
+    text: "Hello",
+    timestamp: [0, 2] as [number, number],
+    styleOverride: { color: "#ef1234", fontSize: 1.5, fontFamily: "Arial" },
+  };
+  for (const splitSubtitleMode of [
+    "none",
+    "left-right",
+    "above-below",
+  ] as const) {
+    const style = { ...baseStyle, splitSubtitleMode };
+    const exported = recordingCanvas();
+    const preview = recordingCanvas();
+    renderSubtitle(
+      exported.context,
+      word,
+      style,
+      { width: 500, height: 500 } as HTMLCanvasElement,
+      "word",
+      1,
+    );
+    renderSubtitleToCanvas(
+      preview.context,
+      { text: word.text, chunks: [word] },
+      1,
+      style,
+      "word",
+      500,
+      500,
+    );
+    for (const result of [exported, preview]) {
+      assert.equal(result.text[0].text, "Hello");
+      assert.equal(result.text[0].color, "#ef1234");
+      assert.match(String(result.text[0].font), /33px/);
+    }
   }
 });

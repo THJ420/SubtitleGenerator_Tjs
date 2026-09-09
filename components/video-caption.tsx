@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useState, useMemo } from "react";
 import { SubtitleStyle, FONT_FAMILIES } from "./subtitle-styling";
 import {
   processTranscriptChunks,
@@ -9,6 +9,11 @@ import {
   type ProcessedWord,
   type WordStyleOverride,
 } from "@/lib/transcript-utils";
+import {
+  getCaptionPlacement,
+  resolveCaptionStyle,
+} from "@/lib/caption-placement";
+import { CaptionTransform } from "./caption-transform";
 import { cn } from "@/lib/utils";
 import { getWordEmphasisBackground } from "@/lib/subtitle-appearance";
 
@@ -274,36 +279,57 @@ interface VideoCaptionProps {
   getFaceX?: () => number;
   /** Measured width of the video container in px, used for proportional font sizing. */
   containerWidth?: number;
+  onStyleChange?: (
+    change: Partial<SubtitleStyle>,
+    timestamp: [number, number],
+    globally?: boolean,
+  ) => void;
+  onInteractionStart?: () => void;
 }
 
 export function VideoCaption({
   transcript,
   currentTime,
-  style,
+  style: globalStyle,
   mode,
   ratio,
   getFaceX,
   containerWidth,
+  onStyleChange,
+  onInteractionStart,
 }: VideoCaptionProps) {
-  const splitMode = style.splitSubtitleMode ?? "none";
+  const [dragPreview, setDragPreview] = useState<{
+    key: string;
+    change: Partial<SubtitleStyle>;
+  } | null>(null);
+  const splitMode =
+    mode === "word" ? "none" : (globalStyle.splitSubtitleMode ?? "none");
   // Frozen face X for left-right split: captured once per phrase, not per frame
   const [phraseFace, setPhraseFace] = useState({ text: "", x: 0.5 });
 
-  const processedChunks: ProcessedChunk[] = processTranscriptChunks(
-    transcript,
-    mode,
-    style.maxWordsPerLine,
+  const processedChunks: ProcessedChunk[] = useMemo(
+    () =>
+      processTranscriptChunks(transcript, mode, globalStyle.maxWordsPerLine),
+    [transcript, mode, globalStyle.maxWordsPerLine],
   );
 
-  const enabledChunks = processedChunks.filter((chunk) => {
-    if (chunk.words) {
-      return !chunk.words.some((w) => w.disabled || w.subtitleHidden);
-    }
-    return !chunk.disabled && !chunk.subtitleHidden;
-  });
+  const enabledChunks = useMemo(
+    () =>
+      processedChunks.filter((chunk) => {
+        if (chunk.words)
+          return !chunk.words.some((w) => w.disabled || w.subtitleHidden);
+        return !chunk.disabled && !chunk.subtitleHidden;
+      }),
+    [processedChunks],
+  );
 
   const activeChunk = binarySearchActiveChunk(enabledChunks, currentTime);
   const currentChunks = activeChunk ? [activeChunk] : [];
+  const captionKey = `${mode}:${activeChunk?.timestamp.join(":")}`;
+  const style = {
+    ...resolveCaptionStyle(globalStyle, activeChunk, mode),
+    ...(dragPreview?.key === captionKey ? dragPreview.change : {}),
+  };
 
   // Derive text and visibility from currentChunks — no state or effects needed
   const currentText =
@@ -424,78 +450,21 @@ export function VideoCaption({
 
   const renderPhraseWithHighlight = () => {
     if (mode === "word") {
-      const wordChunk = transcript.chunks.find(
-        (c) =>
-          c.timestamp[0] === currentChunk.timestamp[0] &&
-          c.timestamp[1] === currentChunk.timestamp[1],
-      );
-      const wordOverride = wordChunk?.styleOverride;
-      const emojiScale = wordOverride?.emojiScale ?? 1;
-
-      if (wordOverride?.emoji) {
-        return (
-          <span
-            style={{
-              ...baseTypographyStyles,
-              ...metallicTypographyStyles,
-              position: "relative",
-              display: "inline-block",
-            }}
-          >
-            {wordOverride.emojiOverlay && (
-              <span
-                style={{
-                  position: "absolute",
-                  top: `${-1.4 * emojiScale}em`,
-                  left: "50%",
-                  transform: "translateX(-50%)",
-                  fontSize: `${1.4 * emojiScale}em`,
-                  lineHeight: 1,
-                  pointerEvents: "none",
-                }}
-              >
-                {wordOverride.emojiOverlay}
-              </span>
-            )}
-            <span style={{ fontSize: `${1.2 * emojiScale}em`, lineHeight: 1 }}>
-              {wordOverride.emoji}
-            </span>
-          </span>
-        );
-      }
-
-      if (wordOverride?.emojiOverlay) {
-        return (
-          <span
-            style={{
-              ...baseTypographyStyles,
-              ...metallicTypographyStyles,
-              position: "relative",
-              display: "inline-block",
-            }}
-          >
-            <span
-              style={{
-                position: "absolute",
-                top: `${-1.4 * emojiScale}em`,
-                left: "50%",
-                transform: "translateX(-50%)",
-                fontSize: `${1.4 * emojiScale}em`,
-                lineHeight: 1,
-                pointerEvents: "none",
-              }}
-            >
-              {wordOverride.emojiOverlay}
-            </span>
-            {text}
-          </span>
-        );
-      }
-
       return (
-        <span style={{ ...baseTypographyStyles, ...metallicTypographyStyles }}>
-          {text}
-        </span>
+        <PhraseWordList
+          words={[currentChunk]}
+          currentWordInPhrase={currentChunk}
+          currentTime={currentTime}
+          style={{
+            ...style,
+            wordEmphasisEnabled: false,
+            wordEmphasisColorEnabled: false,
+            windEnabled: false,
+            dynamicFollowWord: false,
+          }}
+          baseTypographyStyles={baseTypographyStyles}
+          metallicTypographyStyles={metallicTypographyStyles}
+        />
       );
     }
 
@@ -543,23 +512,16 @@ export function VideoCaption({
     line2 = words.slice(splitPoint).join(" ");
   }
 
-  // Scale font relative to the actual video container width. The canvas
-  // renderer uses canvasHeight / 500 as its baseline. The DOM equivalent:
-  // at max-h-500 the 16:9 container is ~889px wide, 9:16 is ~281px.
-  // Scale linearly from that baseline so mobile and desktop stay proportional.
-  // On small screens (<500px) we apply a 1.4× boost so subtitles stay readable
-  // on the tiny preview — the exported video renders at full resolution anyway.
-  const refWidth = ratio === "9:16" ? 281 : 889;
-  const mobileBoost = containerWidth && containerWidth < 500 ? 1.4 : 1;
-  const scaledFontSize =
-    containerWidth && containerWidth > 0
-      ? Math.round(style.fontSize * (containerWidth / refWidth) * mobileBoost)
-      : style.fontSize;
-  const responsiveFontSize = `${Math.max(12, scaledFontSize)}px`;
+  // Use the same 500px frame-height baseline as the canvas exporter.
+  const frameHeight = containerWidth
+    ? containerWidth * (ratio === "9:16" ? 16 / 9 : 9 / 16)
+    : 500;
+  const responsiveFontSize = `${(style.fontSize * frameHeight) / 500}px`;
 
   const verticalOffset = style.verticalOffset ?? 0;
   const position = style.position ?? "bottom";
   const positionClasses = (() => {
+    if (style.customPosition) return ratio === "9:16" ? "w-[85%]" : "w-[90%]";
     const isPortrait = ratio === "9:16";
     const widthClass = isPortrait ? "w-[85%]" : "w-[90%]";
     switch (position) {
@@ -711,7 +673,11 @@ export function VideoCaption({
     <div
       className={cn(
         "absolute text-center",
-        hasKnockout ? "inset-x-0 mx-auto" : "left-1/2 -translate-x-1/2 z-10",
+        style.customPosition
+          ? "z-10"
+          : hasKnockout
+            ? "inset-x-0 mx-auto"
+            : "left-1/2 -translate-x-1/2 z-10",
         "pointer-events-none",
         positionClasses,
       )}
@@ -719,48 +685,84 @@ export function VideoCaption({
         fontFamily: style.fontFamily,
         fontSize: responsiveFontSize,
         fontWeight: style.fontWeight,
+        ...(style.customPosition
+          ? {
+              left: `${style.customPosition.x * 100}%`,
+              top: `${style.customPosition.y * 100}%`,
+              transform: "translate(-50%, -50%)",
+            }
+          : {}),
       }}
     >
       {/* Inner wrapper applies Y offset without disturbing Tailwind's translateX centering */}
       <div style={{ transform: `translateY(${verticalOffset}px)` }}>
-        <div
-          className="inline-block px-3 py-2"
-          style={{
-            ...getCaptionBackgroundStyles(style),
-            ...(hasKnockout ? {} : { transform: "scale(1) translateY(0)" }),
-            opacity: isAnimating ? 1 : 0,
-          }}
+        <CaptionTransform
+          key={captionKey}
+          onPreview={(change) =>
+            setDragPreview(change ? { key: captionKey, change } : null)
+          }
+          fontSize={style.fontSize}
+          actionsAbove={(style.customPosition?.y ?? 0.8) > 0.5}
+          onChange={
+            onStyleChange
+              ? (change) => onStyleChange(change, currentChunk.timestamp)
+              : undefined
+          }
+          onApplyGlobal={
+            onStyleChange && getCaptionPlacement(currentChunk, mode)
+              ? () =>
+                  onStyleChange(
+                    {
+                      customPosition: style.customPosition,
+                      fontSize: style.fontSize,
+                      verticalOffset: 0,
+                    },
+                    currentChunk.timestamp,
+                    true,
+                  )
+              : undefined
+          }
+          onInteractionStart={onInteractionStart}
         >
-          <div className="flex flex-col gap-1">
-            {mode === "phrase" &&
-            shouldSplitText &&
-            !style.dynamicFollowWord &&
-            !style.windEnabled ? (
-              <>
-                <span
-                  style={{
-                    ...baseTypographyStyles,
-                    ...metallicTypographyStyles,
-                  }}
-                >
-                  {line1}
-                </span>
-                {line2 && (
+          <div
+            className="inline-block px-3 py-2"
+            style={{
+              ...getCaptionBackgroundStyles(style),
+              ...(hasKnockout ? {} : { transform: "scale(1) translateY(0)" }),
+              opacity: isAnimating ? 1 : 0,
+            }}
+          >
+            <div className="flex flex-col gap-1">
+              {mode === "phrase" &&
+              shouldSplitText &&
+              !style.dynamicFollowWord &&
+              !style.windEnabled ? (
+                <>
                   <span
                     style={{
                       ...baseTypographyStyles,
                       ...metallicTypographyStyles,
                     }}
                   >
-                    {line2}
+                    {line1}
                   </span>
-                )}
-              </>
-            ) : (
-              renderPhraseWithHighlight()
-            )}
+                  {line2 && (
+                    <span
+                      style={{
+                        ...baseTypographyStyles,
+                        ...metallicTypographyStyles,
+                      }}
+                    >
+                      {line2}
+                    </span>
+                  )}
+                </>
+              ) : (
+                renderPhraseWithHighlight()
+              )}
+            </div>
           </div>
-        </div>
+        </CaptionTransform>
       </div>
     </div>
   );

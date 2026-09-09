@@ -1,3 +1,4 @@
+import { resolveCaptionStyle } from "./caption-placement";
 import {
   formatSubtitleText,
   getWordEmphasisBackground,
@@ -211,7 +212,10 @@ function buildWordFont(
   const size = override?.fontSize
     ? Math.round(finalFontSize * override.fontSize)
     : finalFontSize;
-  return `${style.fontWeight} ${size}px ${family}`;
+  const displaySize = override?.emoji
+    ? size * 1.2 * (override.emojiScale ?? 1)
+    : size;
+  return `${style.fontWeight} ${displaySize}px ${family}`;
 }
 
 // ─── Phrase emphasis rendering ────────────────────────────────────────────────
@@ -397,7 +401,11 @@ function measurePhraseLineWidth(
 
   const baseWidths = displayTexts.map((value, index) => {
     const word = words[index];
-    if (word.styleOverride?.fontFamily || word.styleOverride?.fontSize) {
+    if (
+      word.styleOverride?.fontFamily ||
+      word.styleOverride?.fontSize ||
+      word.styleOverride?.emoji
+    ) {
       ctx.font = buildWordFont(
         style,
         finalFontSize,
@@ -462,7 +470,11 @@ export function renderPhraseLineWithEmphasis(
   // Measure each word with its own font (per-word override support)
   const baseWidths = displayTexts.map((value, index) => {
     const word = words[index];
-    if (word.styleOverride?.fontFamily || word.styleOverride?.fontSize) {
+    if (
+      word.styleOverride?.fontFamily ||
+      word.styleOverride?.fontSize ||
+      word.styleOverride?.emoji
+    ) {
       ctx.font = buildWordFont(
         style,
         finalFontSize,
@@ -559,7 +571,11 @@ export function renderPhraseLineWithEmphasis(
       : (wordColor ?? style.color);
 
     // Set per-word font if override exists
-    if (word.styleOverride?.fontFamily || word.styleOverride?.fontSize) {
+    if (
+      word.styleOverride?.fontFamily ||
+      word.styleOverride?.fontSize ||
+      word.styleOverride?.emoji
+    ) {
       ctx.font = buildWordFont(
         style,
         finalFontSize,
@@ -629,7 +645,11 @@ export function renderPhraseLineWithEmphasis(
     }
 
     // Restore global font
-    if (word.styleOverride?.fontFamily || word.styleOverride?.fontSize) {
+    if (
+      word.styleOverride?.fontFamily ||
+      word.styleOverride?.fontSize ||
+      word.styleOverride?.emoji
+    ) {
       ctx.font = globalFont;
     }
 
@@ -825,8 +845,10 @@ export function renderSubtitle(
   currentTime: number,
   faceX: number = 0.5,
 ) {
+  style = resolveCaptionStyle(style, chunk, mode);
   // Split subtitle mode: render two blocks around the person
-  const splitMode = style.splitSubtitleMode ?? "none";
+  const splitMode =
+    mode === "word" ? "none" : (style.splitSubtitleMode ?? "none");
   if (splitMode !== "none") {
     renderSplitSubtitleOnCanvas(
       ctx,
@@ -844,7 +866,17 @@ export function renderSubtitle(
   // Display on Spoken: full phrase shown dim from phrase start, each word lights up
   // when spoken. Keep full text/words so layout is always stable.
   const displayText = chunk.text;
-  const chunkWords = chunk.words;
+  const chunkWords =
+    mode === "word" && chunk.styleOverride ? [chunk] : chunk.words;
+  if (mode === "word") {
+    style = {
+      ...style,
+      wordEmphasisEnabled: false,
+      wordEmphasisColorEnabled: false,
+      windEnabled: false,
+      dynamicFollowWord: false,
+    };
+  }
 
   const isVerticalVideo = canvas.height > canvas.width;
 
@@ -866,7 +898,7 @@ export function renderSubtitle(
   ctx.textBaseline = "middle";
 
   // Calculate positioning
-  const x = canvas.width / 2;
+  const x = canvas.width * (style.customPosition?.x ?? 0.5);
 
   // Text wrapping logic
   const wordsInText = displayText.split(" ");
@@ -925,6 +957,9 @@ export function renderSubtitle(
       break;
   }
 
+  if (style.customPosition)
+    baseY = canvas.height * style.customPosition.y + verticalOffset;
+
   const startY = baseY - totalHeight / 2 + lineHeight / 2;
 
   // Draw background if specified
@@ -964,8 +999,14 @@ export function renderSubtitle(
       style.wordEmphasisColorEnabled ||
       style.textFadeIn ||
       style.windEnabled ||
-      style.dynamicFollowWord) &&
-    mode === "phrase" &&
+      style.dynamicFollowWord ||
+      chunkWords?.some(
+        (word) =>
+          word.styleOverride &&
+          Object.keys(word.styleOverride).some(
+            (key) => key !== "wordPlacement" && key !== "phrasePlacement",
+          ),
+      )) &&
     phraseWords &&
     phraseWords.length > 0 &&
     Number.isFinite(currentTime);
@@ -988,7 +1029,11 @@ export function renderSubtitle(
         : formatSubtitleText(word.text, style);
 
       // Measure with per-word font if needed
-      if (word.styleOverride?.fontFamily || word.styleOverride?.fontSize) {
+      if (
+        word.styleOverride?.fontFamily ||
+        word.styleOverride?.fontSize ||
+        word.styleOverride?.emoji
+      ) {
         ctx.font = buildWordFont(
           style,
           finalFontSize,
@@ -997,7 +1042,11 @@ export function renderSubtitle(
         );
       }
       const wordWidth = ctx.measureText(wordText).width;
-      if (word.styleOverride?.fontFamily || word.styleOverride?.fontSize) {
+      if (
+        word.styleOverride?.fontFamily ||
+        word.styleOverride?.fontSize ||
+        word.styleOverride?.emoji
+      ) {
         ctx.font = fontString;
       }
 

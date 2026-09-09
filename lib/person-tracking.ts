@@ -1,4 +1,6 @@
+import type { TrackedFace } from "./portrait-layout";
 export interface PositionKeyframe {
+  faces?: TrackedFace[];
   time: number;
   centerX: number; // 0-1 normalized, 0.5 = center
 }
@@ -61,14 +63,12 @@ export function smoothTimeline(
   alpha: number = 0.15,
 ): PositionTimeline {
   if (timeline.length === 0) return [];
-  const result: PositionTimeline = [
-    { time: timeline[0].time, centerX: timeline[0].centerX },
-  ];
+  const result: PositionTimeline = [{ ...timeline[0] }];
   for (let i = 1; i < timeline.length; i++) {
     const elapsed = Math.max(0, timeline[i].time - timeline[i - 1].time);
     const timeAdjustedAlpha = 1 - Math.pow(1 - alpha, elapsed / 0.1);
     result.push({
-      time: timeline[i].time,
+      ...timeline[i],
       centerX: smoothCenterX(
         result[i - 1].centerX,
         timeline[i].centerX,

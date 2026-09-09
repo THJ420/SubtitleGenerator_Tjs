@@ -14,6 +14,7 @@ import {
 import { FONT_FAMILIES } from "@/components/subtitle-styling";
 import {
   X,
+  GripHorizontal,
   RotateCcw,
   Type,
   Palette,
@@ -24,10 +25,9 @@ import {
 import { cn } from "@/lib/utils";
 import { type WordStyleOverride } from "@/lib/transcript-utils";
 import { DebouncedColorInput } from "@/components/ui/debounced-color-input";
-import dynamic from "next/dynamic";
+import { Switch } from "@/components/ui/switch";
+import { WordEmojiPicker } from "./word-emoji-picker";
 import panelStyles from "@/components/editor-panels.module.css";
-
-const EmojiPicker = dynamic(() => import("emoji-picker-react"), { ssr: false });
 
 const fontOptions = Object.values(FONT_FAMILIES);
 
@@ -56,29 +56,85 @@ export function WordStylePopover({
     "replace" | "overlay" | null
   >(null);
   const [activeSection, setActiveSection] = useState<Section | null>(null);
-  const pickerRef = useRef<HTMLDivElement>(null);
+  const emojiTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const effectId = useId();
+  const closeEmojiPicker = () => {
+    setShowEmojiPicker(null);
+    emojiTriggerRef.current?.focus({ preventScroll: true });
+  };
   const titleId = useId();
+  const panelRef = useRef<HTMLDivElement>(null);
+  const positionRef = useRef<{ x: number; y: number } | null>(null);
+  const dragRef = useRef<{ id: number; x: number; y: number } | null>(null);
+
+  // The panel is a direct child of the preview. Keep it inside the visible
+  // portion, including when the emoji picker, browser, or preview changes size.
+  const constrainPanel = () => {
+    const panel = panelRef.current;
+    const parent = panel?.parentElement;
+    if (!panel || !parent) return;
+    const bounds = parent.getBoundingClientRect();
+    const viewport = window.visualViewport;
+    const viewportTop = viewport?.offsetTop ?? 0;
+    const viewportLeft = viewport?.offsetLeft ?? 0;
+    const left = Math.max(8, viewportLeft - bounds.left + 8);
+    const top = Math.max(8, viewportTop - bounds.top + 8);
+    const right = Math.min(
+      parent.clientWidth - 8,
+      viewportLeft + (viewport?.width ?? window.innerWidth) - bounds.left - 8,
+    );
+    const bottom = Math.min(
+      parent.clientHeight - 8,
+      viewportTop + (viewport?.height ?? window.innerHeight) - bounds.top - 8,
+    );
+    panel.style.width = `${Math.max(0, Math.min(330, right - left))}px`;
+    panel.style.maxHeight = `${Math.max(0, bottom - top)}px`;
+    const position = positionRef.current ?? {
+      x: right - panel.offsetWidth,
+      y: top,
+    };
+    position.x = Math.max(
+      left,
+      Math.min(position.x, right - panel.offsetWidth),
+    );
+    position.y = Math.max(
+      top,
+      Math.min(position.y, bottom - panel.offsetHeight),
+    );
+    positionRef.current = position;
+    panel.style.left = `${position.x}px`;
+    panel.style.top = `${position.y}px`;
+  };
+
+  useEffect(() => {
+    if (compact) return;
+    const panel = panelRef.current;
+    if (!panel?.parentElement) return;
+    constrainPanel();
+    const observer = new ResizeObserver(constrainPanel);
+    observer.observe(panel);
+    observer.observe(panel.parentElement);
+    window.addEventListener("resize", constrainPanel);
+    window.addEventListener("scroll", constrainPanel, true);
+    window.visualViewport?.addEventListener("resize", constrainPanel);
+    window.visualViewport?.addEventListener("scroll", constrainPanel);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", constrainPanel);
+      window.removeEventListener("scroll", constrainPanel, true);
+      window.visualViewport?.removeEventListener("resize", constrainPanel);
+      window.visualViewport?.removeEventListener("scroll", constrainPanel);
+    };
+  }, [compact]);
 
   const handleKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
     event.stopPropagation();
     if (event.key === "Escape") {
       event.preventDefault();
-      if (showEmojiPicker) setShowEmojiPicker(null);
+      if (showEmojiPicker) closeEmojiPicker();
       else onClose();
     }
   };
-
-  // Close picker on outside click
-  useEffect(() => {
-    if (!showEmojiPicker) return;
-    const handler = (e: MouseEvent) => {
-      if (pickerRef.current && !pickerRef.current.contains(e.target as Node)) {
-        setShowEmojiPicker(null);
-      }
-    };
-    document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
-  }, [showEmojiPicker]);
 
   const currentFontCss = useMemo(() => {
     if (!override.fontFamily) return undefined;
@@ -135,7 +191,7 @@ export function WordStylePopover({
     } else if (showEmojiPicker === "overlay") {
       onChange({ ...override, emojiOverlay: emojiData.emoji });
     }
-    setShowEmojiPicker(null);
+    closeEmojiPicker();
   };
 
   const handleClearEmoji = () => {
@@ -271,23 +327,20 @@ export function WordStylePopover({
   );
 
   const renderEffectSection = () => (
-    <div className="space-y-1.5">
-      {!compact && (
-        <p className="text-xs font-medium text-muted-foreground">Effect</p>
-      )}
-      <button
-        type="button"
-        aria-pressed={override.effect === "knockout"}
-        onClick={handleToggleKnockout}
-        className={cn(
-          "w-full text-xs px-3 py-1.5 rounded-md border transition-colors text-left",
-          override.effect === "knockout"
-            ? "bg-primary text-primary-foreground border-primary"
-            : "bg-background text-foreground border-border hover:bg-muted",
-        )}
-      >
-        Knockout
-      </button>
+    <div className="space-y-2">
+      <div className="flex items-center justify-between gap-3">
+        <label htmlFor={effectId} className="text-xs font-medium">
+          Knockout effect
+        </label>
+        <Switch
+          id={effectId}
+          checked={override.effect === "knockout"}
+          onCheckedChange={handleToggleKnockout}
+        />
+      </div>
+      <p className="text-xs text-muted-foreground">
+        Other text effects are in the Style panel.
+      </p>
     </div>
   );
 
@@ -302,11 +355,15 @@ export function WordStylePopover({
         )}
         <div className="flex items-center gap-2">
           <button
-            onClick={() =>
+            type="button"
+            aria-haspopup="dialog"
+            aria-expanded={showEmojiPicker === "replace"}
+            onClick={(event) => {
+              emojiTriggerRef.current = event.currentTarget;
               setShowEmojiPicker(
                 showEmojiPicker === "replace" ? null : "replace",
-              )
-            }
+              );
+            }}
             className={cn(
               "flex-1 text-xs px-3 py-1.5 rounded-md border transition-colors text-left",
               override.emoji
@@ -345,11 +402,15 @@ export function WordStylePopover({
         )}
         <div className="flex items-center gap-2">
           <button
-            onClick={() =>
+            type="button"
+            aria-haspopup="dialog"
+            aria-expanded={showEmojiPicker === "overlay"}
+            onClick={(event) => {
+              emojiTriggerRef.current = event.currentTarget;
               setShowEmojiPicker(
                 showEmojiPicker === "overlay" ? null : "overlay",
-              )
-            }
+              );
+            }}
             className={cn(
               "flex-1 text-xs px-3 py-1.5 rounded-md border transition-colors text-left",
               override.emojiOverlay
@@ -407,23 +468,30 @@ export function WordStylePopover({
         </div>
       )}
 
-      {/* Emoji Picker Dropdown */}
       {showEmojiPicker && (
-        <div ref={pickerRef} className="relative">
-          <EmojiPicker
-            onEmojiClick={handleEmojiSelect}
-            width="100%"
-            height={compact ? 280 : 350}
-            skinTonesDisabled
-            searchPlaceHolder="Search emoji..."
-            previewConfig={{ showPreview: false }}
-          />
-        </div>
+        <WordEmojiPicker
+          anchorRef={panelRef}
+          mode={showEmojiPicker}
+          onSelect={handleEmojiSelect}
+          onClose={closeEmojiPicker}
+        />
       )}
     </div>
   );
 
   // --- Compact (mobile) layout ---
+
+  if (compact && showEmojiPicker) {
+    return (
+      <WordEmojiPicker
+        docked
+        anchorRef={panelRef}
+        mode={showEmojiPicker}
+        onSelect={handleEmojiSelect}
+        onClose={closeEmojiPicker}
+      />
+    );
+  }
 
   if (compact) {
     const sections: {
@@ -471,6 +539,7 @@ export function WordStylePopover({
 
     return (
       <div
+        ref={panelRef}
         className={cn(panelStyles.wordPopover, "p-3", className)}
         role="dialog"
         aria-labelledby={titleId}
@@ -543,19 +612,84 @@ export function WordStylePopover({
 
   return (
     <div
-      className={cn(panelStyles.wordPopover, "p-4 w-72", className)}
+      ref={panelRef}
+      className={cn(
+        panelStyles.wordPopover,
+        "flex flex-col overflow-hidden",
+        className,
+      )}
       role="dialog"
       aria-labelledby={titleId}
       onClick={(e) => e.stopPropagation()}
       onKeyDown={handleKeyDown}
     >
       {/* Header */}
-      <div className="flex items-center justify-between mb-3">
+      <div className="flex shrink-0 items-center gap-2 border-b border-border p-3">
+        <button
+          type="button"
+          data-word-editor-drag
+          aria-label="Move word editor; use arrow keys to reposition"
+          title="Drag to move · Arrow keys to reposition"
+          className="touch-none cursor-grab rounded-md p-1.5 text-foreground hover:bg-muted focus-visible:outline-2 active:cursor-grabbing"
+          onPointerDown={(event) => {
+            if (event.button !== 0) return;
+            constrainPanel();
+            const position = positionRef.current!;
+            dragRef.current = {
+              id: event.pointerId,
+              x: event.clientX - position.x,
+              y: event.clientY - position.y,
+            };
+            event.currentTarget.setPointerCapture(event.pointerId);
+          }}
+          onPointerMove={(event) => {
+            const drag = dragRef.current;
+            if (!drag || drag.id !== event.pointerId) return;
+            positionRef.current = {
+              x: event.clientX - drag.x,
+              y: event.clientY - drag.y,
+            };
+            constrainPanel();
+          }}
+          onPointerUp={(event) => {
+            dragRef.current = null;
+            if (event.currentTarget.hasPointerCapture(event.pointerId))
+              event.currentTarget.releasePointerCapture(event.pointerId);
+          }}
+          onPointerCancel={() => {
+            dragRef.current = null;
+          }}
+          onLostPointerCapture={() => {
+            dragRef.current = null;
+          }}
+          onKeyDown={(event) => {
+            const directions: Record<string, [number, number]> = {
+              ArrowLeft: [-1, 0],
+              ArrowRight: [1, 0],
+              ArrowUp: [0, -1],
+              ArrowDown: [0, 1],
+            };
+            const direction = directions[event.key];
+            if (!direction) return;
+            event.preventDefault();
+            event.stopPropagation();
+            const position = positionRef.current;
+            if (!position) return;
+            const step = event.shiftKey ? 1 : 10;
+            positionRef.current = {
+              x: position.x + direction[0] * step,
+              y: position.y + direction[1] * step,
+            };
+            constrainPanel();
+          }}
+        >
+          <GripHorizontal className="h-4 w-4" />
+        </button>
         <h4
           id={titleId}
           className="text-sm font-semibold text-foreground truncate flex-1 mr-2"
         >
-          Style: &ldquo;{wordText}&rdquo;
+          Edit word: &ldquo;{wordText}&rdquo;
         </h4>
         <button
           onClick={onClose}
@@ -566,7 +700,7 @@ export function WordStylePopover({
         </button>
       </div>
 
-      <div className="space-y-3">
+      <div className="min-h-0 overflow-y-auto overscroll-contain space-y-3 p-4">
         {renderFontSection()}
         {renderSizeSection()}
         {renderColorSection()}

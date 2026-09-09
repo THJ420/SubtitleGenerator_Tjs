@@ -8,7 +8,7 @@
  * - PATCH: Bug fixes and small improvements
  */
 
-export const APP_VERSION = "2.5.1";
+export const APP_VERSION = "2.6.0";
 
 export interface ChangelogEntry {
   version: string;
@@ -21,6 +21,113 @@ export interface ChangelogEntry {
 }
 
 export const changelog: ChangelogEntry[] = [
+  {
+    version: "2.6.0",
+    date: "2026-09-09",
+    title: "A new editor, movable captions & better exports",
+    changes: [
+      {
+        type: "added",
+        description:
+          "Drag subtitles to move them and use corner handles or keyboard controls to resize. Keep placement local to one caption or apply it globally.",
+      },
+      {
+        type: "added",
+        description:
+          "Stacked portrait layouts for two-person conversations, with face tracking, top/bottom swap, and adjustable face zoom.",
+      },
+      {
+        type: "added",
+        description:
+          "A zoomable video timeline with thumbnails, subtitle segments, precise scrubbing, playback controls, and quick access to framing settings.",
+      },
+      {
+        type: "added",
+        description:
+          "Silence removal with conservative, default, and aggressive detection, plus automatic face-centered zoom cuts.",
+      },
+      {
+        type: "added",
+        description:
+          "Camera recording with camera and microphone selection, a recording timer, and a review step before editing.",
+      },
+      {
+        type: "changed",
+        description:
+          "Redesigned the landing page and editor with warm backgrounds, yellow accents, clearer controls, and dedicated Style, Subtitles, and Video panels.",
+      },
+      {
+        type: "changed",
+        description:
+          "Rebuilt mobile editing around a compact tool dock and a preview that adapts to the available screen space and keyboard.",
+      },
+      {
+        type: "changed",
+        description:
+          "Best is now the default export quality, using quality-prioritized H.264 encoding and 256 kbps audio. Mobile MP4 exports use up to 6 Mbps, 24 fps, and a 1280-pixel long edge.",
+      },
+      {
+        type: "changed",
+        description:
+          "Word editing is available in both word and phrase modes, with a movable desktop panel, mobile controls, and an emoji picker that stays visible.",
+      },
+      {
+        type: "changed",
+        description:
+          "Added clearer model download and transcription progress, automatic WebGPU-to-CPU fallback, and more useful retry messages.",
+      },
+      {
+        type: "changed",
+        description:
+          "Refreshed the changelog to match the new brand and synchronized the app and package versions.",
+      },
+      {
+        type: "fixed",
+        description:
+          "Caption placement, text edits, emojis, hidden subtitles, and removed sections now survive incoming transcription updates.",
+      },
+      {
+        type: "fixed",
+        description:
+          "Word font, size, color, knockout, emoji replacement, and emoji overlays are honored during export, including when phrase emphasis is off.",
+      },
+      {
+        type: "fixed",
+        description:
+          "Stacked exports retain portrait framing for square and non-9:16 portrait sources, with encoder-compatible dimensions.",
+      },
+      {
+        type: "fixed",
+        description:
+          "Reduced export memory duplication and explicitly release canvas buffers and decoder resources on completion, cancellation, and leaving the editor.",
+      },
+      {
+        type: "fixed",
+        description:
+          "Kept the person visible in background-removal previews and improved background-processing cancellation and media cleanup.",
+      },
+      {
+        type: "fixed",
+        description:
+          "Improved subtitle case handling, active-word background colors, preview font scaling, and watermark sizing.",
+      },
+      {
+        type: "fixed",
+        description:
+          "Improved handling of missing or silent audio, media loading and seeking, skipped sections, and cancelled processing.",
+      },
+      {
+        type: "fixed",
+        description:
+          "September 8 maintenance: fixed low-sample-rate AAC export compatibility on Windows, retained download URLs long enough for the browser to read them, and closed audio samples during cancellation.",
+      },
+      {
+        type: "changed",
+        description:
+          "September 8 maintenance: stabilized recording timers and component state, refreshed install-banner behavior, updated dependencies and lint configuration, and added media regression tests and Next.js contributor guidance.",
+      },
+    ],
+  },
   {
     version: "2.5.1",
     date: "2026-03-11",

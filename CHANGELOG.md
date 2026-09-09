@@ -7,24 +7,111 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [Unreleased]
+## [2.6.0] — 2026-09-09 — A new editor, movable captions & better exports
 
 ### Added
 
-- New `Formal` subtitle style preset using Playfair Display with white text plus a subtle dark outline/shadow treatment
-- Separate active-word emphasis recolor control with a configurable highlight color in both preview and export
+- Drag subtitles to move them and use corner handles or keyboard controls to resize. Keep placement local to one caption or apply it globally.
+- Stacked portrait layouts for two-person conversations, with face tracking, top/bottom swap, and adjustable face zoom.
+- A zoomable video timeline with thumbnails, subtitle segments, precise scrubbing, playback controls, and quick access to framing settings.
+- Silence removal with conservative, default, and aggressive detection, plus automatic face-centered zoom cuts.
+- Camera recording with camera and microphone selection, a recording timer, and a review step before editing.
 
 ### Changed
 
-- Default subtitle styling now starts with the `Formal` look, `3` max words per line, active-word recolor enabled, display-on-spoken disabled, and a `-10px` vertical offset
-- Active-word emphasis is now split into independent `resize` and `recolor` controls
-- Light and transparent preset buttons now use stronger contrast so the active `Formal` preset stays visible in the styling panel
-- Mobile MP4 export now uses more conservative compatibility settings during the playback-freeze investigation, including explicit AVC settings on mobile, lighter mobile export caps, and on-screen export diagnostics for codec, MIME type, bitrate, and source-track details
-- HEVC-source export startup now streams audio samples alongside video rendering and resolves the output MIME type asynchronously so the ongoing `0%` stall investigation is no longer front-loaded on whole-file audio preparation
+- Redesigned the landing page and editor with warm backgrounds, yellow accents, clearer controls, and dedicated Style, Subtitles, and Video panels.
+- Rebuilt mobile editing around a compact tool dock and a preview that adapts to the available screen space and keyboard.
+- Best is now the default export quality, using quality-prioritized H.264 encoding and 256 kbps audio. Mobile MP4 exports use up to 6 Mbps, 24 fps, and a 1280-pixel long edge.
+- Word editing is available in both word and phrase modes, with a movable desktop panel, mobile controls, and an emoji picker that stays visible.
+- Added clearer model download and transcription progress, automatic WebGPU-to-CPU fallback, and more useful retry messages.
+- Refreshed the changelog to match the new brand and synchronized the app and package versions.
+- September 8 maintenance: stabilized recording timers and component state, refreshed install-banner behavior, updated dependencies and lint configuration, and added media regression tests and Next.js contributor guidance.
 
 ### Fixed
 
-- Export rendering now respects the new active-word recolor styling so spoken-word emphasis matches the preview
+- Caption placement, text edits, emojis, hidden subtitles, and removed sections now survive incoming transcription updates.
+- Word font, size, color, knockout, emoji replacement, and emoji overlays are honored during export, including when phrase emphasis is off.
+- Stacked exports retain portrait framing for square and non-9:16 portrait sources, with encoder-compatible dimensions.
+- Reduced export memory duplication and explicitly release canvas buffers and decoder resources on completion, cancellation, and leaving the editor.
+- Kept the person visible in background-removal previews and improved background-processing cancellation and media cleanup.
+- Improved subtitle case handling, active-word background colors, preview font scaling, and watermark sizing.
+- Improved handling of missing or silent audio, media loading and seeking, skipped sections, and cancelled processing.
+- September 8 maintenance: fixed low-sample-rate AAC export compatibility on Windows, retained download URLs long enough for the browser to read them, and closed audio samples during cancellation.
+
+---
+
+## [2.5.1] — 2026-03-11 — UX Polish, Double-Transcription Fix & Cleanup
+
+### Added
+
+- Bottom fade shadow on mobile scroll area to hint that more content is available below
+
+### Changed
+
+- Aspect ratio tabs now use rectangle icons (horizontal/vertical) instead of plain text, with labels on desktop
+- Mobile Styling/Edit tabs restyled with primary color active state and bolder font to establish clear visual hierarchy above the Word/Phrase sub-tabs
+- Disabled React Strict Mode to prevent dev-only double-mount side effects (double worker init, double audio extraction)
+
+### Fixed
+
+- Double audio extraction / transcription triggered by clicking Transcribe twice — added ref guard in useTranscription to prevent concurrent calls
+- 1-2 second idle gap between language modal closing and processing overlay appearing — status now set synchronously in the same render batch as modal close
+- Font subset error from fonttrio install — removed invalid 'menu' subset from Jost, Rubik, and Roboto_Mono declarations in layout.tsx
+
+### Removed
+
+- Removed drag-to-pan and fit/crop toggle for portrait-in-landscape — face tracking handles intelligent cropping; cleaned up all related code from video-upload, main-app, and export hook
+
+---
+
+## [2.5.0] — 2026-03-11 — Mobile-First Redesign & shadcn Theming
+
+### Added
+
+- Confirmation dialog (shadcn AlertDialog) when uploading a new video to prevent accidental loss of current subtitles and styling
+- Confirmation dialog for background removal on videos longer than 1 minute warning about processing time
+- Cancel button with live progress shown inline during background removal processing
+- Slim progress bar below controls during background removal on mobile
+
+### Changed
+
+- Full mobile-first layout: viewport-locked page with no page scroll, inline Styling/Edit tabs below the download button with internal scrolling, and an expand button for full-screen editing
+- Converted entire codebase from hardcoded Tailwind colors to semantic theme variables (bg-primary, text-foreground, bg-muted, etc.) so shadcn presets apply correctly
+- Moved custom utility functions out of lib/utils.ts into lib/transcript-utils.ts so shadcn preset installs no longer overwrite app code
+- All mobile controls now use shadcn Button component with proper variants and sizes for consistent touch targets and interaction states
+- Regenerate Subs button (formerly Change Language) now opens the language modal without auto-starting processing, letting users pick a different language first
+
+### Fixed
+
+- Mobile bottom sheets (Styling/Edit) no longer blink and fail to open — replaced dual-SheetContent pattern with separate Sheet components
+- Language selection modal now properly resets state when reopened, preventing stale Processing state from previous transcription
+
+---
+
+## [2.4.0] — 2026-03-10 — Formal Subtitle Styling & Faster Export
+
+### Added
+
+- New Formal subtitle preset using Playfair Display with white text, a subtle dark outline/shadow treatment, and stronger preset button contrast for light styles
+- Separate active-word recolor emphasis control with a configurable highlight color, supported in both preview and export rendering
+- Export quality selector — choose between Medium (smaller file, closer to source bitrate) and High Quality before downloading
+
+### Changed
+
+- Default subtitle styling now starts with the Formal look, 3 max words per line, display-on-spoken disabled, active-word recolor enabled, and a -10px vertical offset
+- Active-word emphasis is now split into independent resize and recolor controls so each effect can be toggled separately
+- Export pipeline now uses OffscreenCanvas, alpha-free contexts, and StreamTarget for reduced memory usage and faster frame rendering
+- Default export quality lowered from High to Medium so output file sizes match the original video more closely
+- Face position analysis before 9:16 export now runs at 2fps instead of 5fps (2.5x faster) and shows a live progress percentage
+- Mobile MP4 export now uses more conservative compatibility settings during the playback-freeze investigation, including explicit AVC settings on mobile, lighter mobile export caps, and on-screen export diagnostics for codec, MIME type, bitrate, and source-track details
+- HEVC-source export startup now streams audio samples alongside video rendering and resolves the output MIME type asynchronously so the ongoing 0% stall investigation is no longer front-loaded on whole-file audio preparation
+
+### Fixed
+
+- Canvas context state (transforms, composite ops) no longer resets every frame during compositing export — blur, foreground, and mask canvases are sized once and cleared instead of recreated
+- Subtitle chunk lookup during export uses binary search instead of linear scan, eliminating per-frame overhead on long videos with many subtitles
+- Subtitle preview text on mobile now scales relative to the video container width instead of the viewport, with a readability boost on small screens so text stays legible even on compact previews
+- Export subtitle positioning now matches the preview baseline, so vertical offset and default bottom placement render at the expected height in downloaded videos
 - Export frame extraction now clears the canvas every frame, falls back to the source video when a decoded sample is unavailable, and detects HEVC phone-camera sources so they can use sequential decoded-frame reads instead of sparse timestamp lookups during export
 
 ---

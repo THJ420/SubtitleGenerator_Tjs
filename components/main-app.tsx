@@ -1,7 +1,15 @@
 "use client";
 
 import type { JSX } from "react";
-import { useRef, useState, useCallback, useEffect, useMemo } from "react";
+import {
+  useRef,
+  useState,
+  useCallback,
+  useEffect,
+  useMemo,
+  useSyncExternalStore,
+} from "react";
+import { MobileSubtitleStyling } from "@/components/editor/mobile-subtitle-styling";
 import { VideoUpload } from "@/components/video-upload";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import {
@@ -11,9 +19,6 @@ import {
   SlidersHorizontal,
   Captions,
   Info,
-  LockKeyhole,
-  Maximize2,
-  Minimize2,
   ZoomIn,
   ZoomOut,
   Loader2,
@@ -87,6 +92,10 @@ import { TranscriptionProgress } from "@/components/editor/transcription-progres
 import { VideoEffectsControls } from "@/components/editor/video-effects-controls";
 import { PersonSubtitleControls } from "@/components/editor/person-subtitle-controls";
 import styles from "@/components/editor/editor.module.css";
+import {
+  updateCaptionPlacement,
+  clearCaptionPlacements,
+} from "@/lib/caption-placement";
 
 interface MainAppProps {
   initialFile?: File | null;
@@ -127,6 +136,15 @@ const DEFAULT_SUBTITLE_STYLE: SubtitleStyle = {
   verticalOffset: -10,
 };
 
+const mobileQuery = "(max-width: 767px)";
+function subscribeMobile(callback: () => void) {
+  const query = window.matchMedia(mobileQuery);
+  query.addEventListener("change", callback);
+  return () => query.removeEventListener("change", callback);
+}
+const getMobileSnapshot = () => window.matchMedia(mobileQuery).matches;
+const getServerMobileSnapshot = () => false;
+
 export function MainApp({
   initialFile = null,
   onReturnToLanding,
@@ -149,7 +167,36 @@ export function MainApp({
     "style",
   );
   const [showAboutSheet, setShowAboutSheet] = useState(false);
-  const [panelExpanded, setPanelExpanded] = useState(false);
+  const isMobileEditor = useSyncExternalStore(
+    subscribeMobile,
+    getMobileSnapshot,
+    getServerMobileSnapshot,
+  );
+  const StyleControls = isMobileEditor
+    ? MobileSubtitleStyling
+    : SubtitleStyling;
+  const [mobilePanelOpen, setMobilePanelOpen] = useState(false);
+  const editorElementRef = useRef<HTMLElement>(null);
+  useEffect(() => {
+    if (!isMobileEditor) return;
+    const viewport = window.visualViewport;
+    const update = () => {
+      const height = viewport?.height ?? window.innerHeight;
+      editorElementRef.current?.style.setProperty(
+        "--mobile-height",
+        `${height}px`,
+      );
+      if (editorElementRef.current)
+        editorElementRef.current.dataset.short = String(height < 550);
+    };
+    update();
+    viewport?.addEventListener("resize", update);
+    window.addEventListener("resize", update);
+    return () => {
+      viewport?.removeEventListener("resize", update);
+      window.removeEventListener("resize", update);
+    };
+  }, [isMobileEditor]);
   const [bgConfirmationDuration, setBgConfirmationDuration] = useState<
     number | null
   >(null);
@@ -189,8 +236,30 @@ export function MainApp({
     processFrame: bgProcessFrame,
   } = useBackgroundRemoval();
 
-  const { startTracking, stopTracking, getCenterX, buildExportTimeline } =
-    useFaceTracking();
+  const {
+    startTracking,
+    stopTracking,
+    getCenterX,
+    getFaces,
+    faceCount,
+    isLoading: isFaceLoading,
+    buildExportTimeline,
+  } = useFaceTracking();
+
+  const [portraitLayout, setPortraitLayout] = useState<"single" | "stacked">(
+    "single",
+  );
+  const [portraitZoom, setPortraitZoom] = useState(1);
+  const [portraitSwapped, setPortraitSwapped] = useState(false);
+  const stackedPortrait = portraitLayout === "stacked" && ratio === "9:16";
+  const effectiveSubtitleStyle = stackedPortrait
+    ? {
+        ...subtitleStyle,
+        dynamicEnabled: false,
+        backgroundRemovalEnabled: false,
+        splitSubtitleMode: "none" as const,
+      }
+    : subtitleStyle;
 
   // User toggle for face tracking + whether it's actively running
   const [faceTrackingEnabled, setFaceTrackingEnabled] = useState(true);
@@ -212,7 +281,8 @@ export function MainApp({
       setIsVideoLandscape(isLandscape);
       if (
         hasTranscript &&
-        ((faceTrackingEnabled && ratio === "9:16" && isLandscape) ||
+        (stackedPortrait ||
+          (faceTrackingEnabled && ratio === "9:16" && isLandscape) ||
           splitActive ||
           autoZoomEnabled)
       ) {
@@ -239,6 +309,7 @@ export function MainApp({
   }, [
     ratio,
     faceTrackingEnabled,
+    stackedPortrait,
     videoDuration,
     hasTranscript,
     splitActive,
@@ -305,9 +376,9 @@ export function MainApp({
     setShowLanguageModal(true);
   }, [result]);
 
-  const [exportQuality, setExportQuality] = useState<"medium" | "high">(
-    "medium",
-  );
+  const [exportQuality, setExportQuality] = useState<
+    "medium" | "high" | "very_high"
+  >("very_high");
   const sourceDuration = videoDuration;
   const silenceRemovalPlan = useMemo(
     () =>
@@ -390,7 +461,10 @@ export function MainApp({
   } = useVideoDownloadMediaBunny({
     videoRef,
     transcriptChunks: result?.chunks || [],
-    subtitleStyle,
+    subtitleStyle: effectiveSubtitleStyle,
+    stackedPortrait,
+    portraitSwapped,
+    portraitZoom,
     mode,
     ratio,
     format: "mp4",
@@ -403,6 +477,7 @@ export function MainApp({
     processFrame: bgProcessFrame,
     getMaskAtTime,
     buildExportTimeline:
+      stackedPortrait ||
       (faceTrackingEnabled && ratio === "9:16" && isVideoLandscape) ||
       splitActive ||
       autoZoomEnabled
@@ -410,7 +485,7 @@ export function MainApp({
         : undefined,
     silenceRemovalRanges:
       silenceRemovalLevel === "off" ? [] : silenceRemovedRanges,
-    autoZoomEnabled,
+    autoZoomEnabled: autoZoomEnabled && !stackedPortrait,
   });
 
   const startBgRemoval = useCallback(
@@ -478,6 +553,10 @@ export function MainApp({
     cancelDownload();
     // Reset transcription state
     resetTranscription();
+    setMobilePanelOpen(false);
+    setPortraitLayout("single");
+    setPortraitSwapped(false);
+    setPortraitZoom(1);
 
     // Reset face tracking
     stopTracking();
@@ -658,16 +737,21 @@ export function MainApp({
     [processedPhraseChunks],
   );
 
-  // Binary-search for the active chunk on each time update
-  const currentPhraseWords = useMemo(() => {
-    if (!processedPhraseChunks.length) return [];
+  // Keep word editing available in both caption display modes.
+  const currentEditableWords = useMemo(() => {
+    if (!result) return [];
+    if (mode === "word") {
+      const word = binarySearchActiveChunk(result.chunks, currentTime);
+      return word && !word.disabled && !word.subtitleHidden ? [word] : [];
+    }
     const activeChunk = binarySearchActiveChunk(
       processedPhraseChunks,
       currentTime,
     );
-    if (!activeChunk?.words) return [];
-    return activeChunk.words.filter((w) => !w.disabled && !w.subtitleHidden);
-  }, [processedPhraseChunks, currentTime]);
+    return (activeChunk?.words ?? []).filter(
+      (word) => !word.disabled && !word.subtitleHidden,
+    );
+  }, [result, mode, processedPhraseChunks, currentTime]);
 
   const isProcessing = status !== "idle" && status !== "ready";
   const isPreparingTranscription = isProcessing && result === null;
@@ -693,7 +777,11 @@ export function MainApp({
     },
     [setResult],
   );
-  const showTranscript = useCallback(() => setEditorTab("subtitles"), []);
+  const showTranscript = useCallback(() => {
+    setEditorTab("subtitles");
+    setMobilePanelOpen(true);
+    setSelectedWordTimestamp(null);
+  }, []);
   useEffect(
     () => () => {
       silenceDetectionRunIdRef.current += 1;
@@ -703,7 +791,11 @@ export function MainApp({
   );
 
   return (
-    <main className={styles.editor} data-editing={result !== null}>
+    <main
+      ref={editorElementRef}
+      className={styles.editor}
+      data-editing={result !== null}
+    >
       {!isPreparingTranscription ? (
         <h1 className="sr-only">Based Subtitles video editor</h1>
       ) : null}
@@ -720,6 +812,27 @@ export function MainApp({
         <span className={styles.projectName} title={uploadedFile?.name}>
           {uploadedFile?.name || "Untitled Project"}
         </span>
+        {isTranscribingBanner ? (
+          <div
+            className={styles.headerProgress}
+            role="status"
+            title={`${statusMessage} ${visibleProgress}%`}
+          >
+            <Loader2 size={14} className="animate-spin shrink-0" />
+            <span className={styles.headerProgressLabel}>{statusMessage}</span>
+            {latestTranscribedTime !== null ? (
+              <span className={styles.headerProgressTime}>
+                {formatTime(latestTranscribedTime)}
+              </span>
+            ) : null}
+            <strong>{visibleProgress}%</strong>
+            <progress
+              value={visibleProgress}
+              max={100}
+              aria-label="Transcription progress"
+            />
+          </div>
+        ) : null}
         <div className={styles.headerActions}>
           <span className={styles.localBadge}>
             <span />
@@ -741,6 +854,20 @@ export function MainApp({
                 <span>New video</span>
               </Button>
               <Button
+                variant="outline"
+                aria-label="Generate subtitles"
+                title="Generate subtitles"
+                onClick={handleChangeLanguage}
+                disabled={isProcessing || isDownloadProcessing}
+              >
+                <RefreshCw />
+                <span>Generate subtitles</span>
+              </Button>
+              <Button
+                className={styles.exportButton}
+                aria-label={
+                  isDownloadProcessing ? "Exporting video" : "Export video"
+                }
                 onClick={downloadVideo}
                 disabled={
                   isDownloadProcessing ||
@@ -807,27 +934,59 @@ export function MainApp({
             <nav className={styles.rail} aria-label="Editor tools">
               <button
                 type="button"
-                data-active={editorTab === "style"}
-                aria-pressed={editorTab === "style"}
-                onClick={() => setEditorTab("style")}
+                data-active={
+                  editorTab === "style" && (!isMobileEditor || mobilePanelOpen)
+                }
+                aria-pressed={
+                  editorTab === "style" && (!isMobileEditor || mobilePanelOpen)
+                }
+                onClick={() => {
+                  setMobilePanelOpen(
+                    !(mobilePanelOpen && editorTab === "style"),
+                  );
+                  setSelectedWordTimestamp(null);
+                  setEditorTab("style");
+                }}
               >
                 <SlidersHorizontal />
                 <span>Style</span>
               </button>
               <button
                 type="button"
-                data-active={editorTab === "subtitles"}
-                aria-pressed={editorTab === "subtitles"}
-                onClick={() => setEditorTab("subtitles")}
+                data-active={
+                  editorTab === "subtitles" &&
+                  (!isMobileEditor || mobilePanelOpen)
+                }
+                aria-pressed={
+                  editorTab === "subtitles" &&
+                  (!isMobileEditor || mobilePanelOpen)
+                }
+                onClick={() => {
+                  setMobilePanelOpen(
+                    !(mobilePanelOpen && editorTab === "subtitles"),
+                  );
+                  setSelectedWordTimestamp(null);
+                  setEditorTab("subtitles");
+                }}
               >
                 <Captions />
                 <span>Subtitles</span>
               </button>
               <button
                 type="button"
-                data-active={editorTab === "video"}
-                aria-pressed={editorTab === "video"}
-                onClick={() => setEditorTab("video")}
+                data-active={
+                  editorTab === "video" && (!isMobileEditor || mobilePanelOpen)
+                }
+                aria-pressed={
+                  editorTab === "video" && (!isMobileEditor || mobilePanelOpen)
+                }
+                onClick={() => {
+                  setMobilePanelOpen(
+                    !(mobilePanelOpen && editorTab === "video"),
+                  );
+                  setSelectedWordTimestamp(null);
+                  setEditorTab("video");
+                }}
               >
                 <Video />
                 <span>Video</span>
@@ -844,7 +1003,7 @@ export function MainApp({
             </nav>
             <aside
               className={styles.sidebar}
-              data-expanded={panelExpanded}
+              data-mobile-open={mobilePanelOpen && !selectedWordTimestamp}
               aria-label={
                 editorTab === "style"
                   ? "Subtitle style"
@@ -854,24 +1013,37 @@ export function MainApp({
               }
             >
               <div className={styles.panelTools}>
+                <strong>
+                  {editorTab === "style"
+                    ? "Subtitle style"
+                    : editorTab === "subtitles"
+                      ? "Subtitles"
+                      : "Video settings"}
+                </strong>
                 <Button
                   size="sm"
-                  variant="outline"
-                  onClick={() => setPanelExpanded((value) => !value)}
-                  aria-label={
-                    panelExpanded
-                      ? "Collapse editor panel"
-                      : "Expand editor panel"
-                  }
+                  variant="ghost"
+                  onClick={() => setMobilePanelOpen(false)}
                 >
-                  {panelExpanded ? <Minimize2 /> : <Maximize2 />}
-                  {panelExpanded ? "Collapse" : "Expand"}
+                  Done
                 </Button>
               </div>
               {editorTab === "style" ? (
-                <SubtitleStyling
-                  style={subtitleStyle}
-                  onChange={setSubtitleStyle}
+                <StyleControls
+                  style={effectiveSubtitleStyle}
+                  onChange={(next) =>
+                    setSubtitleStyle(
+                      stackedPortrait
+                        ? {
+                            ...next,
+                            dynamicEnabled: subtitleStyle.dynamicEnabled,
+                            backgroundRemovalEnabled:
+                              subtitleStyle.backgroundRemovalEnabled,
+                            splitSubtitleMode: subtitleStyle.splitSubtitleMode,
+                          }
+                        : next,
+                    )
+                  }
                   mode={mode}
                   onModeChange={handleModeChange}
                   personEffects={
@@ -897,7 +1069,7 @@ export function MainApp({
                       processing={isBgProcessing}
                       progress={bgProgress}
                       onCancel={handleCancelBgRemoval}
-                      disabled={isDownloadProcessing}
+                      disabled={isDownloadProcessing || stackedPortrait}
                     />
                   }
                 />
@@ -944,12 +1116,89 @@ export function MainApp({
                   {ratio === "9:16" ? (
                     <Button
                       variant={zoomPortrait ? "default" : "outline"}
+                      disabled={stackedPortrait}
                       onClick={() => handleZoomPortraitChange(!zoomPortrait)}
                     >
                       <ZoomIn />
                       {zoomPortrait ? "Zoom to fill" : "Fit video"}
                     </Button>
                   ) : null}
+                  {ratio === "9:16" && (
+                    <div className={styles.settingGroup}>
+                      <label htmlFor="portrait-layout">Portrait layout</label>
+                      <Select
+                        value={portraitLayout}
+                        disabled={isDownloadProcessing}
+                        onValueChange={(value) =>
+                          setPortraitLayout(value as "single" | "stacked")
+                        }
+                      >
+                        <SelectTrigger id="portrait-layout">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="single">Single person</SelectItem>
+                          <SelectItem value="stacked">
+                            Two people · top / bottom
+                          </SelectItem>
+                        </SelectContent>
+                      </Select>
+                      <p role="status">
+                        {isFaceLoading
+                          ? "Finding faces…"
+                          : faceCount >= 2
+                            ? `${faceCount} faces detected · try a stacked layout.`
+                            : "Use a stacked layout for a two-person conversation."}
+                      </p>
+                      {stackedPortrait && (
+                        <>
+                          <div className="space-y-2">
+                            <div className="flex items-center justify-between">
+                              <label htmlFor="portrait-zoom">Face zoom</label>
+                              <output htmlFor="portrait-zoom">
+                                {Math.round(portraitZoom * 100)}%
+                              </output>
+                            </div>
+                            <input
+                              id="portrait-zoom"
+                              type="range"
+                              min={1}
+                              max={2.5}
+                              step={0.05}
+                              value={portraitZoom}
+                              disabled={isDownloadProcessing}
+                              aria-valuetext={`${Math.round(portraitZoom * 100)} percent`}
+                              onChange={(event) =>
+                                setPortraitZoom(Number(event.target.value))
+                              }
+                              className="w-full accent-primary"
+                            />
+                            <p>
+                              Zoom both views closer to the faces. 100% restores
+                              the original framing.
+                            </p>
+                          </div>
+                          <Button
+                            variant="outline"
+                            disabled={isDownloadProcessing}
+                            onClick={() =>
+                              setPortraitSwapped((value) => !value)
+                            }
+                          >
+                            Swap top / bottom
+                          </Button>
+                          <p>
+                            {faceCount > 2
+                              ? "Frames the two largest faces, ordered left to right. "
+                              : "Left/right order can be swapped. "}
+                            A single detected face fills the frame. Without
+                            detections, uses a left/right split. Person effects
+                            and auto zoom resume in Single person layout.
+                          </p>
+                        </>
+                      )}
+                    </div>
+                  )}
                   <VideoEffectsControls
                     trackingEnabled={faceTrackingEnabled}
                     canTrackPerson={ratio === "9:16" && isVideoLandscape}
@@ -973,7 +1222,7 @@ export function MainApp({
                     modelLoading={isBgModelLoading}
                     processing={isBgProcessing}
                     progress={bgProgress}
-                    disabled={isDownloadProcessing}
+                    disabled={isDownloadProcessing || stackedPortrait}
                     onRemoveBackground={() => handlePersonEffect("background")}
                     onToggleBackground={() =>
                       setSubtitleStyle((previous) => ({
@@ -1028,11 +1277,16 @@ export function MainApp({
                   </div>
                   <Button
                     variant={autoZoomEnabled ? "default" : "outline"}
+                    disabled={stackedPortrait}
                     onClick={() => setAutoZoomEnabled((value) => !value)}
                   >
                     <Clapperboard />
                     Auto zoom cuts {autoZoomEnabled ? "on" : "off"}
                   </Button>
+                  <p className={styles.settingHint}>
+                    Automatically alternates between wider and closer framing
+                    every few seconds, using detected faces to center the crop.
+                  </p>
                   <div className={styles.settingGroup}>
                     <label htmlFor="export-quality">Export quality</label>
                     {videoDuration > 30 * 60 ? (
@@ -1045,7 +1299,9 @@ export function MainApp({
                     <Select
                       value={exportQuality}
                       onValueChange={(value) =>
-                        setExportQuality(value as "medium" | "high")
+                        setExportQuality(
+                          value as "medium" | "high" | "very_high",
+                        )
                       }
                       disabled={isDownloadProcessing}
                     >
@@ -1056,11 +1312,17 @@ export function MainApp({
                         <SelectItem value="medium">
                           Standard · smaller file
                         </SelectItem>
-                        <SelectItem value="high">
-                          High quality · larger file
+                        <SelectItem value="high">High quality</SelectItem>
+                        <SelectItem value="very_high">
+                          Best · larger file
                         </SelectItem>
                       </SelectContent>
                     </Select>
+                    <p>
+                      Best uses higher-quality video encoding and audio; larger
+                      files take longer to export. Mobile exports are limited to
+                      1280 pixels on the long edge and 24 fps.
+                    </p>
                   </div>
                   <Button
                     variant="outline"
@@ -1076,45 +1338,24 @@ export function MainApp({
           </>
         ) : null}
         <div className={styles.canvasColumn}>
+          {isMobileEditor && selectedWordInfo && selectedWordTimestamp ? (
+            <div className={styles.mobileWordPanel}>
+              <WordStylePopover
+                key={`${selectedWordTimestamp[0]}-${selectedWordTimestamp[1]}`}
+                compact
+                wordText={selectedWordInfo.text}
+                override={selectedWordInfo.override}
+                onChange={handleWordStyleChange}
+                onReset={handleWordStyleReset}
+                onClose={handleWordStyleClose}
+              />
+            </div>
+          ) : null}
           <section
             className={styles.preview}
             data-ratio={ratio}
             aria-label="Video preview"
           >
-            {result ? (
-              <div className={styles.previewToolbar}>
-                <div>
-                  <Button
-                    variant="outline"
-                    onClick={() => handleZoomPortraitChange(!zoomPortrait)}
-                    disabled={ratio !== "9:16"}
-                    aria-label={
-                      zoomPortrait ? "Fit video in frame" : "Zoom video to fill"
-                    }
-                  >
-                    {zoomPortrait ? <ZoomIn /> : <ZoomOut />}
-                    {zoomPortrait ? "Zoom" : "Fit"}
-                  </Button>
-                  <Select value={ratio} onValueChange={handleRatioChange}>
-                    <SelectTrigger
-                      aria-label="Preview aspect ratio"
-                      className="w-28 bg-white"
-                    >
-                      {ratio === "9:16" ? (
-                        <RectangleVertical size={16} />
-                      ) : (
-                        <RectangleHorizontal size={16} />
-                      )}
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="16:9">16:9</SelectItem>
-                      <SelectItem value="9:16">9:16</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-              </div>
-            ) : null}
             <div className={styles.videoStage}>
               <VideoUpload
                 key={uploadKey}
@@ -1126,7 +1367,49 @@ export function MainApp({
                 onTimeUpdate={handleTimeUpdate}
                 transcript={result}
                 currentTime={currentTime}
-                subtitleStyle={subtitleStyle}
+                subtitleStyle={effectiveSubtitleStyle}
+                stackedPortrait={stackedPortrait}
+                portraitSwapped={portraitSwapped}
+                portraitZoom={portraitZoom}
+                getFaces={getFaces}
+                onSubtitleStyleChange={(change, timestamp, globally) => {
+                  if (globally) {
+                    setSubtitleStyle((previous) => ({
+                      ...previous,
+                      ...change,
+                    }));
+                    setResult((previous) =>
+                      previous
+                        ? {
+                            ...previous,
+                            chunks: clearCaptionPlacements(previous.chunks),
+                          }
+                        : previous,
+                    );
+                  } else {
+                    const placement = {
+                      ...(change.customPosition
+                        ? { customPosition: change.customPosition }
+                        : {}),
+                      ...(change.fontSize !== undefined
+                        ? { fontSize: change.fontSize }
+                        : {}),
+                    };
+                    setResult((previous) =>
+                      previous
+                        ? {
+                            ...previous,
+                            chunks: updateCaptionPlacement(
+                              previous.chunks,
+                              timestamp,
+                              mode,
+                              placement,
+                            ),
+                          }
+                        : previous,
+                    );
+                  }
+                }}
                 mode={mode}
                 ratio={ratio}
                 zoomPortrait={zoomPortrait}
@@ -1141,51 +1424,50 @@ export function MainApp({
                 silenceRemovalRanges={
                   silenceRemovalLevel === "off" ? [] : silenceRemovedRanges
                 }
-                autoZoomEnabled={autoZoomEnabled}
+                autoZoomEnabled={autoZoomEnabled && !stackedPortrait}
               />
-              {selectedWordInfo && selectedWordTimestamp ? (
-                <WordStylePopover
-                  key={`${selectedWordTimestamp[0]}-${selectedWordTimestamp[1]}`}
-                  wordText={selectedWordInfo.text}
-                  override={selectedWordInfo.override}
-                  onChange={handleWordStyleChange}
-                  onReset={handleWordStyleReset}
-                  onClose={handleWordStyleClose}
-                  className={styles.wordPopover}
-                />
-              ) : null}
             </div>
+            {!isMobileEditor && selectedWordInfo && selectedWordTimestamp ? (
+              <WordStylePopover
+                key={`${selectedWordTimestamp[0]}-${selectedWordTimestamp[1]}`}
+                wordText={selectedWordInfo.text}
+                override={selectedWordInfo.override}
+                onChange={handleWordStyleChange}
+                onReset={handleWordStyleReset}
+                onClose={handleWordStyleClose}
+                className={styles.wordPopover}
+              />
+            ) : null}
             {result ? (
               <div className={styles.wordChips}>
-                {mode === "phrase" && currentPhraseWords.length > 0 ? (
-                  <span>Edit word</span>
+                <span>
+                  <SlidersHorizontal size={14} aria-hidden="true" /> Edit words
+                  · click a word
+                </span>
+                {currentEditableWords.length === 0 ? (
+                  <p className={styles.wordChipsHint}>
+                    Select a subtitle or seek to speech to edit words.
+                  </p>
                 ) : null}
-                {(mode === "phrase" ? currentPhraseWords : []).map(
-                  (word, index) => (
-                    <Button
-                      key={`${word.timestamp[0]}-${index}`}
-                      size="xs"
-                      variant="outline"
-                      data-selected={
-                        selectedWordTimestamp?.[0] === word.timestamp[0] &&
-                        selectedWordTimestamp?.[1] === word.timestamp[1]
-                      }
-                      onClick={() => handleWordSelect(word.timestamp)}
-                    >
-                      {word.text}
-                    </Button>
-                  ),
-                )}
-              </div>
-            ) : null}
-            {isTranscribingBanner ? (
-              <div className={styles.transcribingBanner} role="status">
-                <Loader2 size={16} className="animate-spin" />
-                {statusMessage}{" "}
-                {latestTranscribedTime !== null
-                  ? formatTime(latestTranscribedTime)
-                  : ""}{" "}
-                · {visibleProgress}%
+                {currentEditableWords.map((word, index) => (
+                  <Button
+                    key={`${word.timestamp[0]}-${index}`}
+                    size="xs"
+                    variant="outline"
+                    data-selected={
+                      selectedWordTimestamp?.[0] === word.timestamp[0] &&
+                      selectedWordTimestamp?.[1] === word.timestamp[1]
+                    }
+                    aria-label={`Edit word: ${word.text}`}
+                    aria-pressed={
+                      selectedWordTimestamp?.[0] === word.timestamp[0] &&
+                      selectedWordTimestamp?.[1] === word.timestamp[1]
+                    }
+                    onClick={() => handleWordSelect(word.timestamp)}
+                  >
+                    {word.text}
+                  </Button>
+                ))}
               </div>
             ) : null}
           </section>
@@ -1226,41 +1508,41 @@ export function MainApp({
                 maxWordsPerLine={subtitleStyle.maxWordsPerLine}
                 onSeek={handleSeek}
                 onEdit={showTranscript}
+                previewControls={
+                  <>
+                    <Button
+                      variant="outline"
+                      onClick={() => handleZoomPortraitChange(!zoomPortrait)}
+                      disabled={ratio !== "9:16" || stackedPortrait}
+                      aria-label={
+                        zoomPortrait
+                          ? "Fit video in frame"
+                          : "Zoom video to fill"
+                      }
+                    >
+                      {zoomPortrait ? <ZoomIn /> : <ZoomOut />}
+                      {zoomPortrait ? "Zoom" : "Fit"}
+                    </Button>
+                    <Select value={ratio} onValueChange={handleRatioChange}>
+                      <SelectTrigger
+                        aria-label="Preview aspect ratio"
+                        className="w-28 bg-white"
+                      >
+                        {ratio === "9:16" ? (
+                          <RectangleVertical size={16} />
+                        ) : (
+                          <RectangleHorizontal size={16} />
+                        )}
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="16:9">16:9</SelectItem>
+                        <SelectItem value="9:16">9:16</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </>
+                }
               />
-              <div className={styles.editorBottom}>
-                <span>
-                  <LockKeyhole size={13} /> Your original video stays unchanged.
-                </span>
-                <div>
-                  <Button
-                    variant="outline"
-                    onClick={handleChangeLanguage}
-                    disabled={isProcessing || isDownloadProcessing}
-                  >
-                    <RefreshCw />
-                    Generate subtitles
-                  </Button>
-                  <Button
-                    className={styles.exportButton}
-                    onClick={downloadVideo}
-                    disabled={
-                      isProcessing ||
-                      isDownloadProcessing ||
-                      isBgModelLoading ||
-                      isBgProcessing ||
-                      isDetectingSilence
-                    }
-                    title={
-                      isBgModelLoading || isBgProcessing
-                        ? "Wait for the person effect to finish."
-                        : undefined
-                    }
-                  >
-                    <Download />
-                    {isDownloadProcessing ? "Exporting video…" : "Export Video"}
-                  </Button>
-                </div>
-              </div>
               {isDownloadProcessing ? (
                 <div className={styles.exportProgress} role="status">
                   <div>

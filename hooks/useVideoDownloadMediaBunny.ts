@@ -1,3 +1,10 @@
+import { ExportBuffer } from "@/lib/export-buffer";
+import { getExportDimensions } from "@/lib/export-settings";
+import {
+  drawPortraitLayout,
+  interpolateFaces,
+  type TrackedFace,
+} from "@/lib/portrait-layout";
 import {
   useState,
   useCallback,
@@ -83,6 +90,9 @@ interface UseVideoDownloadMediaBunnyProps {
   silenceRemovalRanges?: TimeRange[];
   autoZoomEnabled?: boolean;
   cropTrackingEnabled?: boolean;
+  stackedPortrait?: boolean;
+  portraitSwapped?: boolean;
+  portraitZoom?: number;
 }
 
 interface ExportDiagnostics {
@@ -142,7 +152,7 @@ export function useVideoDownloadMediaBunny({
   mode,
   ratio = "16:9",
   format = "mp4",
-  quality = "high",
+  quality = "very_high",
   fps = 30,
   bgRemovalReady = false,
   processFrame: bgProcessFrame,
@@ -151,6 +161,9 @@ export function useVideoDownloadMediaBunny({
   silenceRemovalRanges = [],
   autoZoomEnabled = false,
   cropTrackingEnabled = false,
+  stackedPortrait = false,
+  portraitSwapped = false,
+  portraitZoom = 1,
 }: UseVideoDownloadMediaBunnyProps) {
   const [isProcessing, setIsProcessing] = useState(false);
   const [progress, setProgress] = useState(0);
@@ -212,6 +225,9 @@ export function useVideoDownloadMediaBunny({
     let audioSource: AudioSampleSource | null = null;
     let audioPumpPromise: Promise<void> | null = null;
     let outputFinalized = false;
+    let abortInput: (() => void) | undefined;
+    const encodedBuffer = new ExportBuffer();
+    let outputCanvas: HTMLCanvasElement | null = null;
 
     try {
       // Create canvas matching video dimensions, capped on mobile to prevent
@@ -223,6 +239,7 @@ export function useVideoDownloadMediaBunny({
       // encode frames, and OffscreenCanvas causes playback stutters on some
       // mobile browsers. Intermediate canvases use OffscreenCanvas for speed.
       const canvas = document.createElement("canvas");
+      outputCanvas = canvas;
       let exportWidth = video.videoWidth;
       let exportHeight = video.videoHeight;
       const srcW = video.videoWidth;
@@ -245,30 +262,13 @@ export function useVideoDownloadMediaBunny({
       const isMobile =
         /Android|iPhone|iPad|iPod/i.test(navigator.userAgent) ||
         (navigator.maxTouchPoints > 0 && window.innerWidth < 1024);
-      const MIN_EXPORT_DIMENSION = 1080;
-      if (
-        !isMobile &&
-        Math.max(exportWidth, exportHeight) < MIN_EXPORT_DIMENSION
-      ) {
-        const scale =
-          MIN_EXPORT_DIMENSION / Math.max(exportWidth, exportHeight);
-        exportWidth = Math.round(exportWidth * scale);
-        exportHeight = Math.round(exportHeight * scale);
-      }
-      const MAX_MOBILE_DIMENSION = 1280;
-      if (
-        isMobile &&
-        Math.max(exportWidth, exportHeight) > MAX_MOBILE_DIMENSION
-      ) {
-        const scale =
-          MAX_MOBILE_DIMENSION / Math.max(exportWidth, exportHeight);
-        exportWidth = Math.round(exportWidth * scale);
-        exportHeight = Math.round(exportHeight * scale);
-      }
-
-      // H.264 requires even dimensions
-      exportWidth = exportWidth % 2 === 0 ? exportWidth : exportWidth - 1;
-      exportHeight = exportHeight % 2 === 0 ? exportHeight : exportHeight - 1;
+      ({ width: exportWidth, height: exportHeight } = getExportDimensions(
+        srcW,
+        srcH,
+        ratio,
+        stackedPortrait,
+        isMobile,
+      ));
       const exportFps = isMobile ? Math.min(fps, 24) : fps;
 
       canvas.width = exportWidth;
@@ -277,6 +277,7 @@ export function useVideoDownloadMediaBunny({
 
       // Build face tracking timeline for dynamic crop or left-right split during export
       const needsFaceTimeline =
+        stackedPortrait ||
         (needsCrop && cropTrackingEnabled) ||
         autoZoomEnabled ||
         (subtitleStyle.splitSubtitleMode === "left-right" && !needsCrop);
@@ -298,7 +299,7 @@ export function useVideoDownloadMediaBunny({
 
       // For crop mode, sample.draw() doesn't support source crop, so decode
       // to a full-resolution canvas first, then blit the cropped region.
-      if (needsCrop || autoZoomEnabled) {
+      if (stackedPortrait || needsCrop || autoZoomEnabled) {
         decodeCanvas = new OffscreenCanvas(srcW, srcH);
         decodeCtx = decodeCanvas.getContext("2d", {
           alpha: false,
@@ -321,6 +322,10 @@ export function useVideoDownloadMediaBunny({
         source: new BlobSource(videoBlob),
         formats: ALL_FORMATS,
       });
+
+      abortInput = () => input.dispose();
+      signal.addEventListener("abort", abortInput, { once: true });
+      signal.throwIfAborted();
 
       // Get video metadata
       const duration = await input.computeDuration();
@@ -367,24 +372,11 @@ export function useVideoDownloadMediaBunny({
       const sourceIsHevc = /^(hvc1|hev1|hevc)/i.test(sourceCodec ?? "");
       signal.throwIfAborted();
 
-      // Accumulate encoded data via StreamTarget — avoids holding one giant
-      // contiguous buffer (BufferTarget) which can OOM on long videos.
-      let outputBuffer = new Uint8Array(4 * 1024 * 1024); // start 4 MB
-      let outputSize = 0;
+      // The muxer can rewrite headers without copying the entire encoded video.
       const streamTarget = new StreamTarget(
         new WritableStream<StreamTargetChunk>({
           write(chunk) {
-            const end = chunk.position + chunk.data.byteLength;
-            // Grow buffer if needed (double until large enough)
-            if (end > outputBuffer.byteLength) {
-              let newLen = outputBuffer.byteLength;
-              while (newLen < end) newLen *= 2;
-              const grown = new Uint8Array(newLen);
-              grown.set(outputBuffer);
-              outputBuffer = grown;
-            }
-            outputBuffer.set(chunk.data, chunk.position);
-            if (end > outputSize) outputSize = end;
+            encodedBuffer.write(chunk.position, chunk.data);
           },
         }),
         { chunked: true },
@@ -393,7 +385,7 @@ export function useVideoDownloadMediaBunny({
       const outputFormat =
         format === "webm"
           ? new WebMOutputFormat()
-          : new Mp4OutputFormat({ fastStart: "in-memory" });
+          : new Mp4OutputFormat({ fastStart: false });
       const output = new Output({
         format: outputFormat,
         target: streamTarget,
@@ -408,6 +400,8 @@ export function useVideoDownloadMediaBunny({
         high: 4_000_000,
         very_high: 6_000_000,
       } as const;
+      const encoderLatencyMode =
+        quality === "very_high" ? "quality" : "realtime";
       const selectedVideoBitrate =
         isMobile && videoCodec === "avc"
           ? mobileAvcBitrateMap[quality]
@@ -436,14 +430,14 @@ export function useVideoDownloadMediaBunny({
           ? {
               bitrateMode: "constant",
               fullCodecString: isMobile ? "avc1.42001f" : undefined,
-              latencyMode: "realtime",
+              latencyMode: encoderLatencyMode,
               onEncoderConfig: (config) => {
                 if (signal.aborted || !mountedRef.current) return;
                 setExportDiagnostics((previous) => ({
                   ...(previous ?? baseExportDiagnostics),
                   bitrateMode: "constant",
                   encoderCodec: config.codec,
-                  latencyMode: "realtime",
+                  latencyMode: encoderLatencyMode,
                   resolvedCodecString: config.codec,
                 }));
                 console.info("[MediaBunny export] Video encoder config", {
@@ -470,7 +464,7 @@ export function useVideoDownloadMediaBunny({
           ? {
               ...baseExportDiagnostics,
               bitrateMode: "constant",
-              latencyMode: "realtime",
+              latencyMode: encoderLatencyMode,
             }
           : baseExportDiagnostics,
       );
@@ -488,7 +482,7 @@ export function useVideoDownloadMediaBunny({
       if (originalAudioTrack) {
         audioSource = new AudioSampleSource({
           codec: format === "webm" ? "opus" : "aac",
-          bitrate: 128_000,
+          bitrate: quality === "very_high" ? 256_000 : 128_000,
           // Windows AAC encoders reject low-rate input such as 22,050 Hz.
           // Resample in Mediabunny so all source rates use a supported output rate.
           transform: { sampleRate: 48_000 },
@@ -649,6 +643,7 @@ export function useVideoDownloadMediaBunny({
         queuedSequentialSample = initialSequentialResult.value ?? null;
       }
       let iteratorResult: IteratorResult<VideoSample | null> | undefined;
+      let currentPortraitFaces: TrackedFace[] = [];
       let currentAutoZoomCutIndex = -1;
       let currentAutoZoomFaceX = 0.5;
 
@@ -659,7 +654,19 @@ export function useVideoDownloadMediaBunny({
         autoZoomFaceX: number,
       ) => {
         await seekVideo(video, time, signal);
-        if (autoZoomEnabled) {
+        if (stackedPortrait) {
+          drawPortraitLayout(
+            ctx,
+            video,
+            srcW,
+            srcH,
+            canvas.width,
+            canvas.height,
+            currentPortraitFaces,
+            portraitSwapped,
+            portraitZoom,
+          );
+        } else if (autoZoomEnabled) {
           drawImageWithAutoZoom(
             ctx,
             video,
@@ -698,9 +705,25 @@ export function useVideoDownloadMediaBunny({
         outputTime: number,
         autoZoomFaceX: number,
       ) => {
-        if ((needsCrop || autoZoomEnabled) && decodeCanvas && decodeCtx) {
+        if (
+          (stackedPortrait || needsCrop || autoZoomEnabled) &&
+          decodeCanvas &&
+          decodeCtx
+        ) {
           sample.draw(decodeCtx, 0, 0, srcW, srcH);
-          if (autoZoomEnabled) {
+          if (stackedPortrait) {
+            drawPortraitLayout(
+              ctx,
+              decodeCanvas,
+              srcW,
+              srcH,
+              canvas.width,
+              canvas.height,
+              currentPortraitFaces,
+              portraitSwapped,
+              portraitZoom,
+            );
+          } else if (autoZoomEnabled) {
             drawImageWithAutoZoom(
               ctx,
               decodeCanvas,
@@ -747,6 +770,7 @@ export function useVideoDownloadMediaBunny({
 
         const time = frameIndex / exportFps;
         const sourceTime = sourceTimeForOutput(time);
+        currentPortraitFaces = interpolateFaces(faceTimeline ?? [], sourceTime);
 
         // Update progress ~once per second (every fps frames) to avoid
         // excessive React re-renders which freeze mobile devices.
@@ -1185,14 +1209,13 @@ export function useVideoDownloadMediaBunny({
         outputFinalized = true;
 
         // Build download blob from StreamTarget buffer
-        if (outputSize === 0) {
+        if (encodedBuffer.size === 0) {
           throw new Error("Failed to generate video buffer");
         }
 
         const mimeType = format === "webm" ? "video/webm" : "video/mp4";
-        const blob = new Blob([outputBuffer.slice(0, outputSize)], {
-          type: mimeType,
-        });
+        const blob = encodedBuffer.toBlob(mimeType);
+        encodedBuffer.clear();
         const url = URL.createObjectURL(blob);
 
         const a = document.createElement("a");
@@ -1222,6 +1245,7 @@ export function useVideoDownloadMediaBunny({
         }
       }
     } finally {
+      if (abortInput) signal.removeEventListener("abort", abortInput);
       cancelContextRef.current.cancelRequested = true;
       try {
         cancelContextRef.current.videoSource?.close();
@@ -1233,6 +1257,21 @@ export function useVideoDownloadMediaBunny({
         await cancelContextRef.current.output?.cancel().catch(() => {});
       }
       await audioPumpPromise?.catch(() => {});
+      // Explicitly release backing stores; null references alone defer GPU memory reclamation.
+      for (const surface of [
+        outputCanvas,
+        reusableBlurCanvas,
+        reusableFgCanvas,
+        reusableMaskCanvas,
+        reusableFrameCanvas,
+        decodeCanvas,
+      ]) {
+        if (surface) {
+          surface.width = 0;
+          surface.height = 0;
+        }
+      }
+      encodedBuffer.clear();
       // Release all reusable canvases and buffers to free memory
       reusableBlurCanvas = null;
       reusableBlurCtx = null;
@@ -1305,6 +1344,9 @@ export function useVideoDownloadMediaBunny({
     silenceRemovalRanges,
     autoZoomEnabled,
     cropTrackingEnabled,
+    stackedPortrait,
+    portraitSwapped,
+    portraitZoom,
   ]);
 
   const cancelDownload = useCallback(() => {

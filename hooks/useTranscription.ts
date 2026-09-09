@@ -1,4 +1,15 @@
-import { useState, useRef, useEffect, useCallback } from "react";
+import {
+  useState,
+  useRef,
+  useEffect,
+  useCallback,
+  useReducer,
+  type SetStateAction,
+} from "react";
+import {
+  initialTranscriptionState,
+  transcriptionReducer,
+} from "@/lib/transcription-state";
 import { extractAudioFromVideo, NoAudioDetectedError } from "@/lib/audio-utils";
 import type { WordStyleOverride } from "@/lib/transcript-utils";
 import { getModelLoadingErrorMessage } from "@/lib/transcription-errors";
@@ -65,7 +76,16 @@ export function useTranscription() {
   const [status, setStatusState] = useState<TranscriptionStatus>("idle");
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const [result, setResult] = useState<TranscriptionResult | null>(null);
+  const [{ result }, dispatchResult] = useReducer(
+    transcriptionReducer,
+    initialTranscriptionState,
+  );
+  const setResult = useCallback(
+    (value: SetStateAction<TranscriptionResult | null>) => {
+      dispatchResult({ type: "edit", value });
+    },
+    [],
+  );
   const [liveText, setLiveText] = useState<string>("");
   const [progress, setProgress] = useState(0);
   const [modelLoading, setModelLoading] = useState<ModelLoadingState | null>(
@@ -160,7 +180,7 @@ export function useTranscription() {
         case "update": {
           // Per-chunk partial result — update sidebar and progress in real time
           if (e.data.result) {
-            setResult(e.data.result);
+            dispatchResult({ type: "worker", result: e.data.result });
             setLiveText(e.data.result.text || "");
           } else if (typeof e.data.text === "string") {
             setLiveText(e.data.text);
@@ -178,7 +198,7 @@ export function useTranscription() {
             ...e.data.result,
             generationTime: e.data.time,
           };
-          setResult(resultWithTime);
+          dispatchResult({ type: "worker", result: resultWithTime });
           updateStatus("ready");
           setProgress(100);
           setModelLoading(null);
@@ -416,7 +436,7 @@ export function useTranscription() {
         }
       }
     },
-    [ensureModelLoaded, updateStatus, disposeWorker],
+    [ensureModelLoaded, updateStatus, disposeWorker, setResult],
   );
 
   const resetTranscription = () => {
@@ -446,7 +466,7 @@ export function useTranscription() {
     modelLoadingPromiseRef.current = null;
     modelLoadResolveRef.current = null;
     modelLoadRejectRef.current = null;
-  }, [disposeWorker, updateStatus]);
+  }, [disposeWorker, updateStatus, setResult]);
 
   return {
     status,
