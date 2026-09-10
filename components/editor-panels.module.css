@@ -367,9 +367,10 @@
   position: relative;
   flex: 1;
   min-height: 0;
-  overflow-y: auto;
+  overflow: hidden;
+}
+.transcriptScroll > [data-slot="scroll-area-viewport"] {
   overscroll-behavior: contain;
-  scrollbar-width: thin;
 }
 
 .transcriptChunk {

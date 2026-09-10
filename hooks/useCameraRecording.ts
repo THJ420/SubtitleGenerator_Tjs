@@ -1,5 +1,6 @@
 "use client";
 
+import { ensureAacEncoder } from "@/lib/aac-encoder";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { RefObject } from "react";
 import {
@@ -422,9 +423,20 @@ export function useCameraRecording(): UseCameraRecordingReturn {
       const audioTracks = streamRef.current.getAudioTracks();
       for (const track of audioTracks) {
         try {
+          const numberOfChannels = track.getSettings().channelCount || 2;
+          await ensureAacEncoder({
+            bitrate: 192_000,
+            numberOfChannels,
+            sampleRate: 48_000,
+          });
+          if (operationId !== operationIdRef.current) {
+            await output.cancel().catch(() => {});
+            return;
+          }
           const audioSource = new MediaStreamAudioTrackSource(track, {
             codec: "aac",
             bitrate: 192_000,
+            transform: { sampleRate: 48_000, numberOfChannels },
           });
           audioSource.errorPromise.catch((e: unknown) =>
             console.warn("Camera audio source error:", e),

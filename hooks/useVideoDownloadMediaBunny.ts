@@ -1,4 +1,5 @@
 import { ExportBuffer } from "@/lib/export-buffer";
+import { ensureAacEncoder } from "@/lib/aac-encoder";
 import { getExportDimensions } from "@/lib/export-settings";
 import {
   drawPortraitLayout,
@@ -480,9 +481,18 @@ export function useVideoDownloadMediaBunny({
 
       // Handle audio if present
       if (originalAudioTrack) {
+        const audioBitrate = quality === "very_high" ? 256_000 : 128_000;
+        if (format !== "webm") {
+          await ensureAacEncoder({
+            bitrate: audioBitrate,
+            numberOfChannels: await originalAudioTrack.getNumberOfChannels(),
+            sampleRate: 48_000,
+          });
+          signal.throwIfAborted();
+        }
         audioSource = new AudioSampleSource({
           codec: format === "webm" ? "opus" : "aac",
-          bitrate: quality === "very_high" ? 256_000 : 128_000,
+          bitrate: audioBitrate,
           // Windows AAC encoders reject low-rate input such as 22,050 Hz.
           // Resample in Mediabunny so all source rates use a supported output rate.
           transform: { sampleRate: 48_000 },

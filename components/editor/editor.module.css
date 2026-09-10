@@ -144,15 +144,27 @@
   background: #ffffffed;
   box-shadow: 0 5px 24px #23233d04;
   min-height: 0;
-  overflow-y: auto;
-  scrollbar-width: thin;
-  scrollbar-color: #dddde4 transparent;
+  overflow: hidden;
   padding: 20px 16px;
   overscroll-behavior: contain;
-}
-.sidebar:has(.transcriptPanel) {
   display: flex;
   flex-direction: column;
+}
+.sidebarScroll {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+}
+.sidebarScroll > [data-slot="scroll-area-viewport"] {
+  overscroll-behavior: contain;
+}
+.sidebarScroll[data-panel="subtitles"]
+  > [data-slot="scroll-area-viewport"]
+  > div {
+  display: flex !important;
+  flex-direction: column;
+  height: 100%;
 }
 .panelHeading {
   padding-bottom: 18px;
@@ -226,6 +238,42 @@
 .videoSettings > button {
   width: 100%;
   min-height: 38px;
+}
+.sidebar button:not([role="switch"]),
+.rail button {
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: #f0f1f5;
+  color: #252939;
+  font-weight: 650;
+  box-shadow: none;
+}
+.sidebar button:not([role="switch"]):hover:not(:disabled),
+.rail button:hover:not(:disabled) {
+  border-color: var(--border);
+  background: #e3e6ed;
+}
+.sidebar button[aria-pressed="true"],
+.sidebar button[data-variant="default"],
+.rail button[data-active="true"] {
+  border-color: var(--border);
+  background: #fff2a8;
+  color: #25220c;
+}
+.sidebar button[aria-pressed="true"]:hover:not(:disabled),
+.sidebar button[data-variant="default"]:hover:not(:disabled),
+.rail button[data-active="true"]:hover:not(:disabled) {
+  border-color: var(--border);
+  background: #ffe975;
+}
+.sidebar button:not([role="switch"]):focus-visible,
+.rail button:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+.sidebar button:not([role="switch"]):disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 .canvasColumn {
   min-width: 0;
@@ -620,10 +668,29 @@
 .timelineFooter > span:last-child {
   white-space: nowrap;
 }
-.headerActions .exportButton {
+.headerActions .exportButton,
+.exportMenu .exportButton {
   background: #ffe600;
   color: #16170b;
   box-shadow: 0 4px 9px #ccb90020;
+}
+.exportMenu {
+  z-index: 50;
+  width: min(320px, calc(100vw - 24px));
+  max-height: var(--radix-popover-content-available-height);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  padding: 18px;
+  border: 1px solid #d3d5de;
+  border-radius: 14px;
+  background: #fffefa;
+  color: #252939;
+  box-shadow: 0 12px 32px #23233d20;
+}
+.exportMenu .exportButton {
+  min-height: 40px;
 }
 .exportProgress {
   position: absolute;
@@ -643,9 +710,28 @@
   font-size: 12px;
 }
 .exportProgress progress {
+  appearance: none;
+  display: block;
   width: 100%;
   height: 8px;
-  accent-color: #e3c900;
+  margin-top: 10px;
+  overflow: hidden;
+  border: 0;
+  border-radius: 10px;
+  background: #efeff5;
+  accent-color: #ffe600;
+}
+.exportProgress progress::-webkit-progress-bar {
+  background: #efeff5;
+  border-radius: 10px;
+}
+.exportProgress progress::-webkit-progress-value {
+  background: linear-gradient(90deg, #e9bd00, #ffe600);
+  border-radius: 10px;
+}
+.exportProgress progress::-moz-progress-bar {
+  background: linear-gradient(90deg, #e9bd00, #ffe600);
+  border-radius: 10px;
 }
 .exportProgress button {
   margin-top: 8px;
@@ -1312,11 +1398,23 @@
     min-height: 0;
     padding: 0 10px 10px;
     border-radius: 10px 10px 0 0;
-    overflow-y: auto;
+    overflow: hidden;
     overscroll-behavior: contain;
   }
   .sidebar[data-mobile-open="true"] {
-    display: block;
+    display: flex;
+  }
+  .sidebarScroll[data-panel="subtitles"]
+    > [data-slot="scroll-area-viewport"]
+    > div {
+    height: auto;
+  }
+  .sidebar .transcriptPanel,
+  .sidebar .transcriptPanel [data-slot="scroll-area"] {
+    flex: none;
+  }
+  .sidebar .transcriptPanel [data-slot="scroll-area-viewport"] {
+    height: auto;
   }
   .panelTools {
     position: sticky;

@@ -14,7 +14,6 @@ import { VideoUpload } from "@/components/video-upload";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import {
   Upload,
-  Download,
   Video,
   SlidersHorizontal,
   Captions,
@@ -35,6 +34,7 @@ import {
 } from "@/components/subtitle-styling";
 import { WordStylePopover } from "@/components/word-style-popover";
 import { Button } from "@/components/ui/button";
+import { ScrollArea } from "@/components/ui/scroll-area";
 import {
   Select,
   SelectContent,
@@ -88,6 +88,7 @@ import {
 } from "@/lib/silence-removal";
 import { toast } from "sonner";
 import { EditorTimeline } from "@/components/editor/editor-timeline";
+import { ExportMenu } from "@/components/editor/export-menu";
 import { TranscriptionProgress } from "@/components/editor/transcription-progress";
 import { VideoEffectsControls } from "@/components/editor/video-effects-controls";
 import { PersonSubtitleControls } from "@/components/editor/person-subtitle-controls";
@@ -863,12 +864,12 @@ export function MainApp({
                 <RefreshCw />
                 <span>Generate subtitles</span>
               </Button>
-              <Button
-                className={styles.exportButton}
-                aria-label={
-                  isDownloadProcessing ? "Exporting video" : "Export video"
-                }
-                onClick={downloadVideo}
+              <ExportMenu
+                quality={exportQuality}
+                onQualityChange={setExportQuality}
+                onExport={downloadVideo}
+                processing={isDownloadProcessing}
+                longVideo={videoDuration > 30 * 60}
                 disabled={
                   isDownloadProcessing ||
                   isBgModelLoading ||
@@ -880,10 +881,7 @@ export function MainApp({
                     ? "Wait for the person effect to finish."
                     : undefined
                 }
-              >
-                <Download />
-                {isDownloadProcessing ? "Exporting…" : "Export"}
-              </Button>
+              />
             </>
           ) : (
             <Button variant="outline" onClick={() => setShowResetConfirm(true)}>
@@ -1028,312 +1026,289 @@ export function MainApp({
                   Done
                 </Button>
               </div>
-              {editorTab === "style" ? (
-                <StyleControls
-                  style={effectiveSubtitleStyle}
-                  onChange={(next) =>
-                    setSubtitleStyle(
-                      stackedPortrait
-                        ? {
-                            ...next,
-                            dynamicEnabled: subtitleStyle.dynamicEnabled,
-                            backgroundRemovalEnabled:
-                              subtitleStyle.backgroundRemovalEnabled,
-                            splitSubtitleMode: subtitleStyle.splitSubtitleMode,
-                          }
-                        : next,
-                    )
-                  }
-                  mode={mode}
-                  onModeChange={handleModeChange}
-                  personEffects={
-                    <PersonSubtitleControls
-                      placement={subtitleStyle.splitSubtitleMode}
-                      onPlacementChange={(placement) =>
-                        setSubtitleStyle((previous) => ({
-                          ...previous,
-                          splitSubtitleMode: placement,
-                        }))
-                      }
-                      portrait={ratio === "9:16"}
-                      depthEnabled={subtitleStyle.dynamicEnabled}
-                      onDepthChange={(enabled) => {
-                        if (enabled) handlePersonEffect("depth");
-                        else
+              <ScrollArea
+                key={editorTab}
+                className={styles.sidebarScroll}
+                data-panel={editorTab}
+                type="scroll"
+              >
+                {editorTab === "style" ? (
+                  <StyleControls
+                    style={effectiveSubtitleStyle}
+                    onChange={(next) =>
+                      setSubtitleStyle(
+                        stackedPortrait
+                          ? {
+                              ...next,
+                              dynamicEnabled: subtitleStyle.dynamicEnabled,
+                              backgroundRemovalEnabled:
+                                subtitleStyle.backgroundRemovalEnabled,
+                              splitSubtitleMode:
+                                subtitleStyle.splitSubtitleMode,
+                            }
+                          : next,
+                      )
+                    }
+                    mode={mode}
+                    onModeChange={handleModeChange}
+                    personEffects={
+                      <PersonSubtitleControls
+                        placement={subtitleStyle.splitSubtitleMode}
+                        onPlacementChange={(placement) =>
                           setSubtitleStyle((previous) => ({
                             ...previous,
-                            dynamicEnabled: false,
-                          }));
-                      }}
-                      modelLoading={isBgModelLoading}
-                      processing={isBgProcessing}
-                      progress={bgProgress}
-                      onCancel={handleCancelBgRemoval}
-                      disabled={isDownloadProcessing || stackedPortrait}
-                    />
-                  }
-                />
-              ) : null}
-              {editorTab === "subtitles" ? (
-                <>
-                  <TranscriptSidebar
-                    className={styles.transcriptPanel}
-                    transcript={result}
-                    currentTime={currentTime}
-                    setCurrentTime={handleSeek}
-                    onTranscriptUpdate={handleTranscriptUpdate}
-                    mode={mode}
-                    maxWordsPerLine={subtitleStyle.maxWordsPerLine}
-                    dynamicEnabled={subtitleStyle.dynamicEnabled}
-                    videoFileName={uploadedFile?.name}
-                  />
-                  {result.generationTime ? (
-                    <p className={styles.panelFootnote}>
-                      Generated in {Math.round(result.generationTime / 1000)}s ·{" "}
-                      {deviceLabel}
-                    </p>
-                  ) : null}
-                </>
-              ) : null}
-              {editorTab === "video" ? (
-                <div className={styles.videoSettings}>
-                  <div className={styles.panelHeading}>
-                    <h2>Video settings</h2>
-                    <p>Frame your video and refine the pace.</p>
-                  </div>
-                  <div className={styles.settingGroup}>
-                    <label htmlFor="video-ratio">Aspect ratio</label>
-                    <Select value={ratio} onValueChange={handleRatioChange}>
-                      <SelectTrigger id="video-ratio">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="16:9">Landscape · 16:9</SelectItem>
-                        <SelectItem value="9:16">Portrait · 9:16</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  {ratio === "9:16" ? (
-                    <Button
-                      variant={zoomPortrait ? "default" : "outline"}
-                      disabled={stackedPortrait}
-                      onClick={() => handleZoomPortraitChange(!zoomPortrait)}
-                    >
-                      <ZoomIn />
-                      {zoomPortrait ? "Zoom to fill" : "Fit video"}
-                    </Button>
-                  ) : null}
-                  {ratio === "9:16" && (
-                    <div className={styles.settingGroup}>
-                      <label htmlFor="portrait-layout">Portrait layout</label>
-                      <Select
-                        value={portraitLayout}
-                        disabled={isDownloadProcessing}
-                        onValueChange={(value) =>
-                          setPortraitLayout(value as "single" | "stacked")
+                            splitSubtitleMode: placement,
+                          }))
                         }
-                      >
-                        <SelectTrigger id="portrait-layout">
+                        portrait={ratio === "9:16"}
+                        depthEnabled={subtitleStyle.dynamicEnabled}
+                        onDepthChange={(enabled) => {
+                          if (enabled) handlePersonEffect("depth");
+                          else
+                            setSubtitleStyle((previous) => ({
+                              ...previous,
+                              dynamicEnabled: false,
+                            }));
+                        }}
+                        modelLoading={isBgModelLoading}
+                        processing={isBgProcessing}
+                        progress={bgProgress}
+                        onCancel={handleCancelBgRemoval}
+                        disabled={isDownloadProcessing || stackedPortrait}
+                      />
+                    }
+                  />
+                ) : null}
+                {editorTab === "subtitles" ? (
+                  <>
+                    <TranscriptSidebar
+                      className={styles.transcriptPanel}
+                      transcript={result}
+                      currentTime={currentTime}
+                      setCurrentTime={handleSeek}
+                      onTranscriptUpdate={handleTranscriptUpdate}
+                      mode={mode}
+                      maxWordsPerLine={subtitleStyle.maxWordsPerLine}
+                      dynamicEnabled={subtitleStyle.dynamicEnabled}
+                      videoFileName={uploadedFile?.name}
+                    />
+                    {result.generationTime ? (
+                      <p className={styles.panelFootnote}>
+                        Generated in {Math.round(result.generationTime / 1000)}s
+                        · {deviceLabel}
+                      </p>
+                    ) : null}
+                  </>
+                ) : null}
+                {editorTab === "video" ? (
+                  <div className={styles.videoSettings}>
+                    <div className={styles.panelHeading}>
+                      <h2>Video settings</h2>
+                      <p>Frame your video and refine the pace.</p>
+                    </div>
+                    <div className={styles.settingGroup}>
+                      <label htmlFor="video-ratio">Aspect ratio</label>
+                      <Select value={ratio} onValueChange={handleRatioChange}>
+                        <SelectTrigger id="video-ratio">
                           <SelectValue />
                         </SelectTrigger>
                         <SelectContent>
-                          <SelectItem value="single">Single person</SelectItem>
-                          <SelectItem value="stacked">
-                            Two people · top / bottom
+                          <SelectItem value="16:9">Landscape · 16:9</SelectItem>
+                          <SelectItem value="9:16">Portrait · 9:16</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    {ratio === "9:16" ? (
+                      <Button
+                        variant={zoomPortrait ? "default" : "outline"}
+                        disabled={stackedPortrait}
+                        onClick={() => handleZoomPortraitChange(!zoomPortrait)}
+                      >
+                        <ZoomIn />
+                        {zoomPortrait ? "Zoom to fill" : "Fit video"}
+                      </Button>
+                    ) : null}
+                    {ratio === "9:16" && (
+                      <div className={styles.settingGroup}>
+                        <label htmlFor="portrait-layout">Portrait layout</label>
+                        <Select
+                          value={portraitLayout}
+                          disabled={isDownloadProcessing}
+                          onValueChange={(value) =>
+                            setPortraitLayout(value as "single" | "stacked")
+                          }
+                        >
+                          <SelectTrigger id="portrait-layout">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="single">
+                              Single person
+                            </SelectItem>
+                            <SelectItem value="stacked">
+                              Two people · top / bottom
+                            </SelectItem>
+                          </SelectContent>
+                        </Select>
+                        <p role="status">
+                          {isFaceLoading
+                            ? "Finding faces…"
+                            : faceCount >= 2
+                              ? `${faceCount} faces detected · try a stacked layout.`
+                              : "Use a stacked layout for a two-person conversation."}
+                        </p>
+                        {stackedPortrait && (
+                          <>
+                            <div className="space-y-2">
+                              <div className="flex items-center justify-between">
+                                <label htmlFor="portrait-zoom">Face zoom</label>
+                                <output htmlFor="portrait-zoom">
+                                  {Math.round(portraitZoom * 100)}%
+                                </output>
+                              </div>
+                              <input
+                                id="portrait-zoom"
+                                type="range"
+                                min={1}
+                                max={2.5}
+                                step={0.05}
+                                value={portraitZoom}
+                                disabled={isDownloadProcessing}
+                                aria-valuetext={`${Math.round(portraitZoom * 100)} percent`}
+                                onChange={(event) =>
+                                  setPortraitZoom(Number(event.target.value))
+                                }
+                                className="w-full accent-primary"
+                              />
+                              <p>
+                                Zoom both views closer to the faces. 100%
+                                restores the original framing.
+                              </p>
+                            </div>
+                            <Button
+                              variant="outline"
+                              disabled={isDownloadProcessing}
+                              onClick={() =>
+                                setPortraitSwapped((value) => !value)
+                              }
+                            >
+                              Swap top / bottom
+                            </Button>
+                            <p>
+                              {faceCount > 2
+                                ? "Frames the two largest faces, ordered left to right. "
+                                : "Left/right order can be swapped. "}
+                              A single detected face fills the frame. Without
+                              detections, uses a left/right split. Person
+                              effects and auto zoom resume in Single person
+                              layout.
+                            </p>
+                          </>
+                        )}
+                      </div>
+                    )}
+                    <VideoEffectsControls
+                      trackingEnabled={faceTrackingEnabled}
+                      canTrackPerson={ratio === "9:16" && isVideoLandscape}
+                      onTrackingChange={setFaceTrackingEnabled}
+                      backgroundEnabled={subtitleStyle.backgroundRemovalEnabled}
+                      backgroundReady={bgRemovalReady}
+                      backgroundType={subtitleStyle.backgroundType}
+                      backgroundColor={subtitleStyle.solidBackgroundColor}
+                      onBackgroundTypeChange={(backgroundType) =>
+                        setSubtitleStyle((previous) => ({
+                          ...previous,
+                          backgroundType,
+                        }))
+                      }
+                      onBackgroundColorChange={(solidBackgroundColor) =>
+                        setSubtitleStyle((previous) => ({
+                          ...previous,
+                          solidBackgroundColor,
+                        }))
+                      }
+                      modelLoading={isBgModelLoading}
+                      processing={isBgProcessing}
+                      progress={bgProgress}
+                      disabled={isDownloadProcessing || stackedPortrait}
+                      onRemoveBackground={() =>
+                        handlePersonEffect("background")
+                      }
+                      onToggleBackground={() =>
+                        setSubtitleStyle((previous) => ({
+                          ...previous,
+                          dynamicEnabled: false,
+                          backgroundRemovalEnabled:
+                            !previous.backgroundRemovalEnabled,
+                        }))
+                      }
+                      onCancelBackground={handleCancelBgRemoval}
+                    />
+                    <div className={styles.settingGroup}>
+                      <label htmlFor="silence-removal">Silence removal</label>
+                      <p role="status" aria-live="polite">
+                        {isDetectingSilence
+                          ? "Finding quiet sections… Changes apply when this finishes."
+                          : silenceRemovalLevel === "off"
+                            ? "Off — play and export the original pauses."
+                            : silenceRemovedRanges.length === 0
+                              ? "No matching pauses found. The video is unchanged."
+                              : `Active in preview and export · ${silenceRemovedRanges.length} cuts · ${silenceDurationLabel}`}
+                      </p>
+                      {silenceRemovalLevel !== "off" &&
+                      !isDetectingSilence &&
+                      silenceRemovedRanges.length > 0 ? (
+                        <p>
+                          The playhead skips the cut sections. Timeline times
+                          refer to the original video.
+                        </p>
+                      ) : null}
+                      <Select
+                        value={silenceRemovalLevel}
+                        onValueChange={handleSilenceRemovalLevelChange}
+                        disabled={isDetectingSilence || isDownloadProcessing}
+                      >
+                        <SelectTrigger id="silence-removal">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="off">Off</SelectItem>
+                          <SelectItem value="aggressive">
+                            {SILENCE_REMOVAL_LEVELS.aggressive.label}
+                          </SelectItem>
+                          <SelectItem value="default">
+                            {SILENCE_REMOVAL_LEVELS.default.label}
+                          </SelectItem>
+                          <SelectItem value="conservative">
+                            {SILENCE_REMOVAL_LEVELS.conservative.label}
                           </SelectItem>
                         </SelectContent>
                       </Select>
-                      <p role="status">
-                        {isFaceLoading
-                          ? "Finding faces…"
-                          : faceCount >= 2
-                            ? `${faceCount} faces detected · try a stacked layout.`
-                            : "Use a stacked layout for a two-person conversation."}
-                      </p>
-                      {stackedPortrait && (
-                        <>
-                          <div className="space-y-2">
-                            <div className="flex items-center justify-between">
-                              <label htmlFor="portrait-zoom">Face zoom</label>
-                              <output htmlFor="portrait-zoom">
-                                {Math.round(portraitZoom * 100)}%
-                              </output>
-                            </div>
-                            <input
-                              id="portrait-zoom"
-                              type="range"
-                              min={1}
-                              max={2.5}
-                              step={0.05}
-                              value={portraitZoom}
-                              disabled={isDownloadProcessing}
-                              aria-valuetext={`${Math.round(portraitZoom * 100)} percent`}
-                              onChange={(event) =>
-                                setPortraitZoom(Number(event.target.value))
-                              }
-                              className="w-full accent-primary"
-                            />
-                            <p>
-                              Zoom both views closer to the faces. 100% restores
-                              the original framing.
-                            </p>
-                          </div>
-                          <Button
-                            variant="outline"
-                            disabled={isDownloadProcessing}
-                            onClick={() =>
-                              setPortraitSwapped((value) => !value)
-                            }
-                          >
-                            Swap top / bottom
-                          </Button>
-                          <p>
-                            {faceCount > 2
-                              ? "Frames the two largest faces, ordered left to right. "
-                              : "Left/right order can be swapped. "}
-                            A single detected face fills the frame. Without
-                            detections, uses a left/right split. Person effects
-                            and auto zoom resume in Single person layout.
-                          </p>
-                        </>
-                      )}
                     </div>
-                  )}
-                  <VideoEffectsControls
-                    trackingEnabled={faceTrackingEnabled}
-                    canTrackPerson={ratio === "9:16" && isVideoLandscape}
-                    onTrackingChange={setFaceTrackingEnabled}
-                    backgroundEnabled={subtitleStyle.backgroundRemovalEnabled}
-                    backgroundReady={bgRemovalReady}
-                    backgroundType={subtitleStyle.backgroundType}
-                    backgroundColor={subtitleStyle.solidBackgroundColor}
-                    onBackgroundTypeChange={(backgroundType) =>
-                      setSubtitleStyle((previous) => ({
-                        ...previous,
-                        backgroundType,
-                      }))
-                    }
-                    onBackgroundColorChange={(solidBackgroundColor) =>
-                      setSubtitleStyle((previous) => ({
-                        ...previous,
-                        solidBackgroundColor,
-                      }))
-                    }
-                    modelLoading={isBgModelLoading}
-                    processing={isBgProcessing}
-                    progress={bgProgress}
-                    disabled={isDownloadProcessing || stackedPortrait}
-                    onRemoveBackground={() => handlePersonEffect("background")}
-                    onToggleBackground={() =>
-                      setSubtitleStyle((previous) => ({
-                        ...previous,
-                        dynamicEnabled: false,
-                        backgroundRemovalEnabled:
-                          !previous.backgroundRemovalEnabled,
-                      }))
-                    }
-                    onCancelBackground={handleCancelBgRemoval}
-                  />
-                  <div className={styles.settingGroup}>
-                    <label htmlFor="silence-removal">Silence removal</label>
-                    <p role="status" aria-live="polite">
-                      {isDetectingSilence
-                        ? "Finding quiet sections… Changes apply when this finishes."
-                        : silenceRemovalLevel === "off"
-                          ? "Off — play and export the original pauses."
-                          : silenceRemovedRanges.length === 0
-                            ? "No matching pauses found. The video is unchanged."
-                            : `Active in preview and export · ${silenceRemovedRanges.length} cuts · ${silenceDurationLabel}`}
-                    </p>
-                    {silenceRemovalLevel !== "off" &&
-                    !isDetectingSilence &&
-                    silenceRemovedRanges.length > 0 ? (
-                      <p>
-                        The playhead skips the cut sections. Timeline times
-                        refer to the original video.
-                      </p>
-                    ) : null}
-                    <Select
-                      value={silenceRemovalLevel}
-                      onValueChange={handleSilenceRemovalLevelChange}
-                      disabled={isDetectingSilence || isDownloadProcessing}
+                    <Button
+                      variant={autoZoomEnabled ? "default" : "outline"}
+                      disabled={stackedPortrait}
+                      onClick={() => setAutoZoomEnabled((value) => !value)}
                     >
-                      <SelectTrigger id="silence-removal">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="off">Off</SelectItem>
-                        <SelectItem value="aggressive">
-                          {SILENCE_REMOVAL_LEVELS.aggressive.label}
-                        </SelectItem>
-                        <SelectItem value="default">
-                          {SILENCE_REMOVAL_LEVELS.default.label}
-                        </SelectItem>
-                        <SelectItem value="conservative">
-                          {SILENCE_REMOVAL_LEVELS.conservative.label}
-                        </SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  <Button
-                    variant={autoZoomEnabled ? "default" : "outline"}
-                    disabled={stackedPortrait}
-                    onClick={() => setAutoZoomEnabled((value) => !value)}
-                  >
-                    <Clapperboard />
-                    Auto zoom cuts {autoZoomEnabled ? "on" : "off"}
-                  </Button>
-                  <p className={styles.settingHint}>
-                    Automatically alternates between wider and closer framing
-                    every few seconds, using detected faces to center the crop.
-                  </p>
-                  <div className={styles.settingGroup}>
-                    <label htmlFor="export-quality">Export quality</label>
-                    {videoDuration > 30 * 60 ? (
-                      <p>
-                        Long videos can take time to export. You can also
-                        download SRT from the Subtitles panel and use a desktop
-                        video app.
-                      </p>
-                    ) : null}
-                    <Select
-                      value={exportQuality}
-                      onValueChange={(value) =>
-                        setExportQuality(
-                          value as "medium" | "high" | "very_high",
-                        )
-                      }
-                      disabled={isDownloadProcessing}
-                    >
-                      <SelectTrigger id="export-quality">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="medium">
-                          Standard · smaller file
-                        </SelectItem>
-                        <SelectItem value="high">High quality</SelectItem>
-                        <SelectItem value="very_high">
-                          Best · larger file
-                        </SelectItem>
-                      </SelectContent>
-                    </Select>
-                    <p>
-                      Best uses higher-quality video encoding and audio; larger
-                      files take longer to export. Mobile exports are limited to
-                      1280 pixels on the long edge and 24 fps.
+                      <Clapperboard />
+                      Auto zoom cuts {autoZoomEnabled ? "on" : "off"}
+                    </Button>
+                    <p className={styles.settingHint}>
+                      Automatically alternates between wider and closer framing
+                      every few seconds, using detected faces to center the
+                      crop.
                     </p>
+                    <Button
+                      variant="outline"
+                      onClick={handleChangeLanguage}
+                      disabled={isProcessing || isDownloadProcessing}
+                    >
+                      <RefreshCw />
+                      Regenerate subtitles
+                    </Button>
                   </div>
-                  <Button
-                    variant="outline"
-                    onClick={handleChangeLanguage}
-                    disabled={isProcessing || isDownloadProcessing}
-                  >
-                    <RefreshCw />
-                    Regenerate subtitles
-                  </Button>
-                </div>
-              ) : null}
+                ) : null}
+              </ScrollArea>
             </aside>
           </>
         ) : null}

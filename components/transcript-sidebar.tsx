@@ -11,6 +11,7 @@ import {
   type ProcessedWord,
 } from "@/lib/transcript-utils";
 import { Button } from "@/components/ui/button";
+import { ScrollArea } from "@/components/ui/scroll-area";
 import { Edit, Eye, EyeOff, SkipForward, Filter, Download } from "lucide-react";
 import panelStyles from "@/components/editor-panels.module.css";
 
@@ -388,9 +389,10 @@ export function TranscriptSidebar({
         )}
       </div>
 
-      <div
+      <ScrollArea
         className={panelStyles.transcriptScroll}
-        ref={transcriptContainerRef}
+        viewportRef={transcriptContainerRef}
+        type="scroll"
       >
         <div className="pr-1">
           {displayChunks.map((chunk, i) => {
@@ -593,7 +595,7 @@ export function TranscriptSidebar({
             );
           })}
         </div>
-      </div>
+      </ScrollArea>
 
       <div className={panelStyles.transcriptExports}>
         <div className="text-xs font-semibold mb-3">Download subtitles</div>
