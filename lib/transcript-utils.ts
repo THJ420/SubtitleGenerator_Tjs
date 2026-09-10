@@ -32,10 +32,11 @@ export function mergeTimestampRanges(
  * Format seconds into SRT timestamp format (HH:MM:SS,MS)
  */
 export function formatSrtTime(seconds: number): string {
-  const hours = Math.floor(seconds / 3600);
-  const minutes = Math.floor((seconds % 3600) / 60);
-  const secs = Math.floor(seconds % 60);
-  const ms = Math.floor((seconds % 1) * 1000);
+  const totalMs = Math.max(0, Math.round(seconds * 1000));
+  const hours = Math.floor(totalMs / 3_600_000);
+  const minutes = Math.floor((totalMs % 3_600_000) / 60_000);
+  const secs = Math.floor((totalMs % 60_000) / 1000);
+  const ms = totalMs % 1000;
 
   return `${hours.toString().padStart(2, "0")}:${minutes
     .toString()
@@ -48,10 +49,11 @@ export function formatSrtTime(seconds: number): string {
  * Format seconds into WebVTT timestamp format (HH:MM:SS.MS)
  */
 export function formatVttTime(seconds: number): string {
-  const hours = Math.floor(seconds / 3600);
-  const minutes = Math.floor((seconds % 3600) / 60);
-  const secs = Math.floor(seconds % 60);
-  const ms = Math.floor((seconds % 1) * 1000);
+  const totalMs = Math.max(0, Math.round(seconds * 1000));
+  const hours = Math.floor(totalMs / 3_600_000);
+  const minutes = Math.floor((totalMs % 3_600_000) / 60_000);
+  const secs = Math.floor((totalMs % 60_000) / 1000);
+  const ms = totalMs % 1000;
 
   return `${hours.toString().padStart(2, "0")}:${minutes
     .toString()
@@ -75,6 +77,8 @@ export interface WordStyleOverride {
 export interface ProcessedWord {
   text: string;
   timestamp: [number, number];
+  sourceTimestamp?: [number, number];
+  sourceIndex?: number;
   disabled?: boolean;
   subtitleHidden?: boolean;
   dynamicPosition?: "behind" | "front";
@@ -84,6 +88,8 @@ export interface ProcessedWord {
 export interface ProcessedChunk {
   text: string;
   timestamp: [number, number];
+  sourceTimestamp?: [number, number];
+  sourceIndex?: number;
   disabled?: boolean;
   subtitleHidden?: boolean;
   dynamicPosition?: "behind" | "front";
@@ -95,6 +101,8 @@ interface SourceTranscript {
   chunks: Array<{
     text: string;
     timestamp: [number, number];
+    sourceTimestamp?: [number, number];
+    sourceIndex?: number;
     disabled?: boolean;
     subtitleHidden?: boolean;
     dynamicPosition?: "behind" | "front";
@@ -162,9 +170,11 @@ function _processTranscriptChunks(
   dynamicEnabled?: boolean,
 ): ProcessedChunk[] {
   if (mode === "word") {
-    return transcript.chunks.map((chunk) => ({
+    return transcript.chunks.map((chunk, sourceIndex) => ({
       text: chunk.text,
       timestamp: chunk.timestamp,
+      sourceTimestamp: chunk.sourceTimestamp,
+      sourceIndex,
       disabled: chunk.disabled,
       subtitleHidden: chunk.subtitleHidden,
       dynamicPosition: chunk.dynamicPosition,
@@ -179,6 +189,8 @@ function _processTranscriptChunks(
     words: ProcessedWord[];
     start: number;
     end: number;
+    sourceStart: number;
+    sourceEnd: number;
     disabled: boolean;
     subtitleHidden: boolean;
   } | null;
@@ -218,6 +230,7 @@ function _processTranscriptChunks(
 
   transcript.chunks.forEach((chunk, index) => {
     const [start, end] = chunk.timestamp;
+    const [sourceStart, sourceEnd] = chunk.sourceTimestamp ?? chunk.timestamp;
     const trimmedText = chunk.text.trim();
 
     if (!trimmedText) {
@@ -229,6 +242,8 @@ function _processTranscriptChunks(
     const wordData: ProcessedWord = {
       text: trimmedText,
       timestamp: [start, end],
+      sourceTimestamp: chunk.sourceTimestamp,
+      sourceIndex: index,
       disabled: chunk.disabled,
       subtitleHidden: chunk.subtitleHidden,
       dynamicPosition: chunk.dynamicPosition,
@@ -241,15 +256,18 @@ function _processTranscriptChunks(
         words: [wordData],
         start,
         end,
+        sourceStart,
+        sourceEnd,
         disabled: chunkDisabled,
         subtitleHidden: chunkHidden,
       };
       return;
     }
 
-    const timeSinceLastWord = start - currentGroup.end;
+    const timeSinceLastWord = sourceStart - currentGroup.sourceEnd;
     const wouldExceedWordLimit = currentGroup.texts.length >= MAX_PHRASE_WORDS;
-    const wouldExceedDuration = end - currentGroup.start > MAX_PHRASE_DURATION;
+    const wouldExceedDuration =
+      sourceEnd - currentGroup.sourceStart > MAX_PHRASE_DURATION;
     const crossesDisabledBoundary = chunkDisabled !== currentGroup.disabled;
     const crossesHiddenBoundary = chunkHidden !== currentGroup.subtitleHidden;
     const endsWithPunctuation = /[.!?]$/.test(
@@ -275,6 +293,8 @@ function _processTranscriptChunks(
         words: [wordData],
         start,
         end,
+        sourceStart,
+        sourceEnd,
         disabled: chunkDisabled,
         subtitleHidden: chunkHidden,
       };
@@ -282,6 +302,7 @@ function _processTranscriptChunks(
       currentGroup.texts.push(trimmedText);
       currentGroup.words.push(wordData);
       currentGroup.end = end;
+      currentGroup.sourceEnd = sourceEnd;
     }
 
     if (index === transcript.chunks.length - 1) {
@@ -304,11 +325,12 @@ function getSubtitleFileChunks(
   const disabledRanges = transcript.chunks
     .filter((chunk) => chunk.disabled)
     .map((chunk) => ({
-      startTime: chunk.timestamp[0],
-      endTime: chunk.timestamp[1],
+      startTime: (chunk.sourceTimestamp ?? chunk.timestamp)[0],
+      endTime: (chunk.sourceTimestamp ?? chunk.timestamp)[1],
     }));
   const duration = transcript.chunks.reduce(
-    (end, chunk) => Math.max(end, chunk.timestamp[1]),
+    (end, chunk) =>
+      Math.max(end, chunk.timestamp[1], chunk.sourceTimestamp?.[1] ?? 0),
     0,
   );
   const chunks =

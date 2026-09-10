@@ -1,0 +1,254 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import {
+  editSubtitleTiming,
+  resetSubtitleTiming,
+  restoreSubtitleTiming,
+  parseSubtitleTime,
+} from "../lib/subtitle-timing";
+import {
+  processTranscriptChunks,
+  transcriptToSrt,
+  transcriptToVtt,
+  binarySearchActiveChunk,
+  formatSrtTime,
+  formatVttTime,
+} from "../lib/transcript-utils";
+import {
+  createVideoCutPlan,
+  adjustTranscriptChunksForSilenceRemoval,
+} from "../lib/silence-removal";
+import {
+  initialTranscriptionState,
+  transcriptionReducer,
+} from "../lib/transcription-state";
+import type { TranscriptionResult } from "../hooks/useTranscription";
+
+const words = (): TranscriptionResult["chunks"] => [
+  { text: "One", timestamp: [1, 1.4] },
+  { text: "two", timestamp: [1.6, 2] },
+  { text: "three.", timestamp: [2.2, 2.6] },
+  { text: "Next.", timestamp: [4, 4.5] },
+];
+
+test("word edge edits clamp to adjacent words, video bounds, and minimum duration", () => {
+  const chunks = words();
+  const selection = { first: 1, last: 1 };
+  assert.deepEqual(
+    editSubtitleTiming(chunks, selection, "start", -10, 6)[1].timestamp,
+    [1.4, 2],
+  );
+  assert.deepEqual(
+    editSubtitleTiming(chunks, selection, "end", 8, 6)[1].timestamp,
+    [1.6, 2.2],
+  );
+  assert.deepEqual(
+    editSubtitleTiming(chunks, selection, "start", 9, 6)[1].timestamp,
+    [1.98, 2],
+  );
+  assert.deepEqual(
+    editSubtitleTiming(chunks, { first: 0, last: 0 }, "start", -1, 6)[0]
+      .timestamp,
+    [0, 1.4],
+  );
+  assert.deepEqual(
+    editSubtitleTiming(chunks, { first: 3, last: 3 }, "end", 9, 6)[3].timestamp,
+    [4, 6],
+  );
+  assert.deepEqual(
+    editSubtitleTiming(chunks, selection, "end", NaN, 6),
+    chunks,
+  );
+  assert.deepEqual(chunks, words());
+});
+
+test("line edges change only the first or last word and keep line grouping stable", () => {
+  const chunks = words();
+  const selection = { first: 0, last: 2 };
+  const earlier = editSubtitleTiming(chunks, selection, "start", 0, 6);
+  assert.deepEqual(earlier.slice(1), chunks.slice(1));
+  const later = editSubtitleTiming(earlier, selection, "end", 3.9, 6);
+  assert.deepEqual(later[1], chunks[1]);
+  assert.deepEqual(later[2].timestamp, [2.2, 3.9]);
+  const phrases = processTranscriptChunks({ chunks: later }, "phrase", 3);
+  assert.equal(phrases.length, 2);
+  assert.deepEqual(phrases[0].timestamp, [0, 3.9]);
+  assert.deepEqual(
+    phrases[0].words?.map((word) => word.sourceIndex),
+    [0, 1, 2],
+  );
+});
+
+test("whole-line moves preserve word durations and gaps and stop at neighbors", () => {
+  const chunks = words();
+  const moved = editSubtitleTiming(chunks, { first: 0, last: 2 }, "move", 8, 6);
+  assert.equal(moved[2].timestamp[1], 4);
+  for (let i = 0; i < 3; i++) {
+    const delta = moved[i].timestamp[0] - chunks[i].timestamp[0];
+    assert.ok(Math.abs(delta - 1.4) < 1e-8);
+    assert.ok(
+      Math.abs(moved[i].timestamp[1] - chunks[i].timestamp[1] - delta) < 1e-8,
+    );
+  }
+  assert.equal(moved[3], chunks[3]);
+  assert.equal(
+    editSubtitleTiming(chunks, { first: 0, last: 2 }, "move", -8, 6)[0]
+      .timestamp[0],
+    0,
+  );
+});
+
+test("timing edits and Undo never change video cuts or unrelated text and style edits", () => {
+  const original = words();
+  original[1].disabled = true;
+  const edited = editSubtitleTiming(
+    original,
+    { first: 1, last: 1 },
+    "end",
+    2.15,
+    6,
+  );
+  assert.deepEqual(
+    createVideoCutPlan(6, [], edited),
+    createVideoCutPlan(6, [], original),
+  );
+  const changedText = edited.map((chunk, i) =>
+    i === 1
+      ? { ...chunk, text: "TWO", styleOverride: { color: "red" } }
+      : chunk,
+  );
+  const undone = restoreSubtitleTiming(changedText, original);
+  assert.equal(undone[1].text, "TWO");
+  assert.equal(undone[1].styleOverride?.color, "red");
+  assert.equal(undone[1].disabled, true);
+  assert.deepEqual(undone[1].timestamp, original[1].timestamp);
+  assert.equal(undone[0].sourceTimestamp, undefined);
+  const disabledAfterEdit = edited.map((chunk, i) => ({
+    ...chunk,
+    disabled: i === 1,
+  }));
+  assert.deepEqual(
+    createVideoCutPlan(6, [], disabledAfterEdit)?.removedRanges,
+    [{ startTime: 1.6, endTime: 2 }],
+  );
+});
+
+test("Reset restores original timing and refuses new overlaps", () => {
+  const original = words();
+  const moved = editSubtitleTiming(
+    original,
+    { first: 1, last: 1 },
+    "move",
+    0.1,
+    6,
+  );
+  assert.deepEqual(
+    resetSubtitleTiming(moved, { first: 1, last: 1 }, 6)?.[1].timestamp,
+    original[1].timestamp,
+  );
+  const extendedPrevious = editSubtitleTiming(
+    moved,
+    { first: 0, last: 0 },
+    "end",
+    1.7,
+    6,
+  );
+  assert.equal(
+    resetSubtitleTiming(extendedPrevious, { first: 1, last: 1 }, 6),
+    null,
+  );
+});
+
+test("preview and subtitle exports use edited times while cuts retain original positions", () => {
+  let chunks = editSubtitleTiming(
+    words(),
+    { first: 0, last: 0 },
+    "start",
+    0.5,
+    6,
+  );
+  assert.equal(
+    binarySearchActiveChunk(processTranscriptChunks({ chunks }), 0.6)?.text,
+    "One",
+  );
+  assert.match(transcriptToSrt({ chunks }), /00:00:00,500 --> 00:00:01,400/);
+  assert.match(transcriptToVtt({ chunks }), /00:00:00.500/);
+  assert.deepEqual(
+    JSON.parse(JSON.stringify({ chunks })).chunks[0].timestamp,
+    [0.5, 1.4],
+  );
+  chunks[1] = { ...chunks[1], disabled: true };
+  chunks = editSubtitleTiming(chunks, { first: 1, last: 1 }, "end", 2.15, 6);
+  const plan = createVideoCutPlan(6, [], chunks)!;
+  const exported = adjustTranscriptChunksForSilenceRemoval(chunks, plan);
+  assert.ok(
+    Math.abs(
+      exported.find((chunk) => chunk.text === "Next.")!.timestamp[0] - 3.6,
+    ) < 1e-8,
+  );
+  assert.match(transcriptToSrt({ chunks }), /00:00:03,600/);
+});
+
+test("timing and style edits survive repeated worker timestamp revisions", () => {
+  let state = transcriptionReducer(initialTranscriptionState, {
+    type: "worker",
+    result: { text: "One", chunks: words() },
+  });
+  state = transcriptionReducer(state, {
+    type: "edit",
+    value: (previous) => ({
+      ...previous!,
+      chunks: editSubtitleTiming(
+        previous!.chunks,
+        { first: 0, last: 0 },
+        "start",
+        0.5,
+        6,
+      ),
+    }),
+  });
+  for (const offset of [0.05, 0.1]) {
+    const incoming = words();
+    incoming[0].timestamp = [1 + offset, 1.4 + offset];
+    state = transcriptionReducer(state, {
+      type: "worker",
+      result: { text: "One", chunks: incoming },
+    });
+    assert.deepEqual(state.result!.chunks[0].timestamp, [0.5, 1.4]);
+    assert.deepEqual(state.result!.chunks[0].sourceTimestamp, [1, 1.4]);
+  }
+});
+
+test("precise time input accepts seconds and timecodes but rejects malformed values", () => {
+  assert.equal(parseSubtitleTime("1:02.350"), 62.35);
+  assert.equal(parseSubtitleTime("01:02:03.456"), 3723.456);
+  assert.equal(parseSubtitleTime("0.020"), 0.02);
+  for (const value of ["", "-1", "NaN", "1:99", "Infinity", "1.1234", "1e3"])
+    assert.equal(parseSubtitleTime(value), null);
+});
+
+test("time formatting rounds exact milliseconds and carries into the next minute", () => {
+  assert.equal(formatSrtTime(1.4), "00:00:01,400");
+  assert.equal(formatVttTime(59.9996), "00:01:00.000");
+});
+
+test("cut exports keep edited and unedited words in a consistent grouping time base", () => {
+  const chunks: TranscriptionResult["chunks"] = [
+    { text: "Cut.", timestamp: [0, 3], disabled: true },
+    { text: "Hello", timestamp: [4, 4.2] },
+    { text: "world.", timestamp: [4.3, 4.5] },
+  ];
+  const edited = editSubtitleTiming(
+    chunks,
+    { first: 2, last: 2 },
+    "end",
+    4.6,
+    6,
+  );
+  const plan = createVideoCutPlan(6, [], edited)!;
+  const output = adjustTranscriptChunksForSilenceRemoval(edited, plan);
+  const phrases = processTranscriptChunks({ chunks: output }, "phrase", 3);
+  assert.equal(phrases.length, 1);
+  assert.equal(phrases[0].text, "Hello world.");
+  assert.deepEqual(edited[2].sourceTimestamp, [4.3, 4.5]);
+});

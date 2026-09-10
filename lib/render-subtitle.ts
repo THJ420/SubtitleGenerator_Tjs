@@ -16,6 +16,7 @@ interface TranscriptData {
   chunks: Array<{
     text: string;
     timestamp: [number, number];
+    sourceTimestamp?: [number, number];
     disabled?: boolean;
     subtitleHidden?: boolean;
     dynamicPosition?: "behind" | "front";
@@ -26,6 +27,7 @@ interface TranscriptData {
 interface WordTiming {
   text: string;
   timestamp: [number, number];
+  sourceTimestamp?: [number, number];
   dynamicPosition?: "behind" | "front";
   styleOverride?: WordStyleOverride;
 }
@@ -146,7 +148,12 @@ export function renderSubtitleToCanvas(
 
 function renderSplitSubtitleToCanvas(
   ctx: CanvasRenderingContext2D,
-  chunk: { text: string; timestamp: [number, number]; words?: WordTiming[] },
+  chunk: {
+    text: string;
+    timestamp: [number, number];
+    sourceTimestamp?: [number, number];
+    words?: WordTiming[];
+  },
   style: SubtitleStyle,
   canvasWidth: number,
   canvasHeight: number,

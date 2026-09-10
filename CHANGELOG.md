@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [2.7.0] — 2026-09-10 — Subtitle timing, playback speed & recording audio
+
+### Added
+
+- Adjust word and phrase timing with timeline handles, drag to move, arrow keys, or exact start and end fields. Undo and Reset are available.
+- Preview video at 1×, 1.1×, 1.25×, or 1.5× speed while preserving speech pitch. Export speed stays unchanged.
+
+### Changed
+
+- Camera audio is captured on the audio thread and buffered for AAC encoding, with stereo support and a final audio flush when recording stops.
+- The transcription progress bar and 100% Local badge now use the yellow brand colors.
+
+### Fixed
+
+- Timing edits preserve original video cut positions and phrase grouping. Preview and subtitle exports use edited times, and timing Undo preserves text and style edits.
+- Subtitle timing edits survive transcription updates. SRT and WebVTT timestamps round correctly to milliseconds, including minute boundaries.
+- Stopping audio capture and draining the encoder now have a shared 15-second limit. Failed or cancelled audio finalization releases capture resources and reports an error instead of waiting indefinitely.
+
+---
+
 ## [2.6.0] — 2026-09-09 — A new editor, movable captions & better exports
 
 ### Added

@@ -16,6 +16,7 @@ import { type FaceBounds } from "@/lib/render-subtitle";
 export interface WordTiming {
   text: string;
   timestamp: [number, number];
+  sourceTimestamp?: [number, number];
   dynamicPosition?: "behind" | "front";
   styleOverride?: WordStyleOverride;
 }
@@ -23,6 +24,7 @@ export interface WordTiming {
 export interface TranscriptChunk {
   text: string;
   timestamp: [number, number];
+  sourceTimestamp?: [number, number];
   disabled?: boolean;
   subtitleHidden?: boolean;
   dynamicPosition?: "behind" | "front";

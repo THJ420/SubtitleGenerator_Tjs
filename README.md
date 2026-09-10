@@ -1,16 +1,18 @@
 # BasedSubtitles
 
-AI-powered subtitle generator that runs 100% in your browser. No uploads, no servers, no accounts.
+AI-powered subtitle generator that processes video and audio in your browser. No media uploads or accounts are required.
 
 - Transcribes video audio using [Whisper.js](https://huggingface.co/docs/transformers.js) (WebGPU/WASM)
 - Exports MP4 with subtitles baked in using [Mediabunny](https://mediabunny.dev/)
-- Works offline after first load (models are cached by the browser)
+- Caches downloaded models in the browser for reuse. Model files and other app assets require network access when they are not cached.
 
 Live at [basedsubs.getbasedapps.com](https://basedsubs.getbasedapps.com)
 
+Current release: **2.7.0**. See [CHANGELOG.md](./CHANGELOG.md) for release details.
+
 ## AI Models
 
-All models run locally in the browser — no data ever leaves your device.
+All model inference runs locally in the browser. Video and audio are processed on your device; the app downloads model files as needed.
 
 | Model                             | Task                                            | Library                                   |
 | --------------------------------- | ----------------------------------------------- | ----------------------------------------- |
@@ -24,6 +26,9 @@ All models run locally in the browser — no data ever leaves your device.
 - **100+ languages** — Whisper multilingual models (tiny/base/small)
 - **25+ Google Fonts** — Bangers, Bebas Neue, Permanent Marker, Montserrat, and more
 - **Per-word styling** — override font, size, color, and effects on individual words
+- **Caption placement** — drag and resize captions, with local or global placement
+- **Subtitle timing** — edit word or phrase start/end times, move subtitles on the timeline, and use Undo or Reset
+- **Playback speed** — preview at 1×, 1.1×, 1.25×, or 1.5× with pitch preservation; export speed is unchanged
 - **Emoji replace / overlay** — swap a word for an emoji or float one above it
 - **Background removal** — AI person segmentation, runs locally via Web Worker
 - **3D depth effect** — subtitles render behind or in front of the detected person
@@ -31,13 +36,24 @@ All models run locally in the browser — no data ever leaves your device.
 - **Split subtitle mode** — phrase words placed above/below or left/right of the face
 - **Display on Spoken** — words light up as each one is spoken (karaoke style)
 - **Portrait / landscape** — 9:16 and 16:9 export with portrait zoom/crop
-- **Camera recording** — record directly from front or back camera
-- **MP4 export** — baked subtitles, H.264 + AAC, 30fps
+- **Stacked portrait** — two-person layouts with face tracking, swap, and face zoom
+- **Silence removal** — detect and skip silent sections in playback and video export
+- **Camera recording** — record up to five minutes, select a camera, and review before editing; audio capture runs on the audio thread with buffered AAC encoding
+- **MP4 export** — baked subtitles, H.264 + AAC; desktop defaults to 30 fps, while mobile uses up to 24 fps and a 1280-pixel long edge
+- **Transcript export** — download JSON, SRT, and WebVTT
+
+### Edit subtitle timing
+
+Select a subtitle on the timeline. Drag either edge to change its start or end, or drag the middle to move it. Arrow keys adjust timing by 0.01 seconds; Shift + Arrow adjusts it by 0.1 seconds. Exact-time fields accept seconds or `HH:MM:SS.mmm`.
+
+Timing uses source-video seconds. Changes stay within the video and adjacent word limits. Edge edits enforce a minimum word duration of 0.02 seconds. In phrase mode, an edge edit changes the first or last word; moving a phrase preserves its word durations and gaps.
+
+**Undo timing** restores the previous timing edit without changing text or styles. **Reset timing** restores original times if they do not overlap adjacent words. Timing changes do not move the original media ranges used to remove video sections.
 
 ## Getting Started
 
 ```bash
-npm install
+npm ci
 npm run dev
 ```
 
@@ -45,18 +61,20 @@ Open [http://localhost:3000](http://localhost:3000).
 
 ```bash
 npm run build   # production build
+npm start       # serve the production build
+npm test        # regression tests
 npm run lint    # ESLint
-npm run format  # Prettier
+npm run format:check # Prettier check
 ```
 
 ## Architecture
 
 ### Subtitle Generation
 
-Whisper models run in a dedicated Web Worker (`app/worker.ts`) via `@huggingface/transformers`. Audio is extracted from the video file client-side and passed as a `Float32Array`. No network requests occur after the model is cached.
+Whisper models run in a dedicated Web Worker (`app/worker.ts`) via `@huggingface/transformers`. Audio is extracted from the video file client-side and passed as a `Float32Array`. Cached model files can be reused; additional models and uncached assets still require downloads.
 
 ```
-Video File → audio-utils (Web Worker) → Float32Array → Whisper Worker → TranscriptChunks[]
+Video File → audio-utils → Float32Array → Whisper Worker → TranscriptChunks[]
 ```
 
 Models available:
@@ -107,11 +125,17 @@ The preview and export renderers share font resolution logic via `lib/font-confi
 
 ### Video Export
 
-Mediabunny renders each frame to an offscreen canvas, composites subtitles (and optionally masks), then encodes to MP4. Export is capped at 1080p on mobile to stay within canvas memory limits.
+Mediabunny renders each frame to an offscreen canvas, composites subtitles (and optionally masks), then encodes to MP4. Mobile exports use a maximum 1280-pixel long edge to reduce memory and encoding load.
 
 ```
 Video + Subtitles + Masks → frame-by-frame canvas render → Mediabunny → MP4 download
 ```
+
+### Camera audio
+
+`public/audio/recording-processor.js` captures microphone samples in an AudioWorklet. `lib/recording-audio.ts` queues these samples for AAC encoding and flushes the final block when recording stops. Audio capture shutdown and encoder drain share a 15-second deadline. Failure or cancellation releases capture resources and reports an error.
+
+Camera and microphone access require a secure browser context, such as HTTPS or localhost, and user permission. See [recording validation](./tests/RECORDING-AUDIO-VALIDATION.md) and [subtitle timing validation](./tests/SUBTITLE-TIMING-VALIDATION.md) for test scope and remaining device checks.
 
 ## Project Structure
 
@@ -125,6 +149,7 @@ app/
 
 components/
   main-app.tsx                # Main editor — all state lives here
+  editor/                    # Timeline, playback speed, and timing controls
   video-upload.tsx            # Video player + compositing canvas
   video-caption.tsx           # DOM subtitle renderer
   subtitle-styling.tsx        # Style controls panel
@@ -139,13 +164,17 @@ hooks/
   useFaceTracking.ts          # MediaPipe face detection
   useVideoDownloadMediaBunny.ts # Video export
   useCameraRecording.ts       # Camera input
+  useSubtitleTiming.ts        # Timing transactions, Undo, and Reset
 
 lib/
   font-config.ts              # Shared font map (CSS vars → canvas names)
   render-subtitle.ts          # Canvas subtitle rendering (preview)
   person-tracking.ts          # Face position interpolation
   audio-utils.ts              # Audio extraction
-  utils.ts                    # cn(), formatTime(), processTranscriptChunks()
+  recording-audio.ts          # AudioWorklet capture and AAC queue
+  subtitle-timing.ts          # Timing bounds, edits, and reset
+  transcript-utils.ts         # Phrase grouping and subtitle exports
+  utils.ts                    # Shared UI utilities
   changelog.ts                # Version history data
 ```
 
@@ -161,6 +190,8 @@ Pull requests are welcome. For larger changes, open an issue first to discuss th
 
 ```bash
 npm run lint         # check for lint errors
+npm test             # run regression tests
+npm run build        # check the production build and TypeScript
 npm run format:check # check formatting
 npm run format       # auto-fix formatting
 ```
@@ -172,7 +203,7 @@ npm run format       # auto-fix formatting
 | `@huggingface/transformers` | Whisper AI transcription (local) |
 | `@mediapipe/tasks-vision`   | Face detection                   |
 | `mediabunny`                | MP4 video encoding               |
-| `next`                      | React framework (v15)            |
+| `next`                      | React framework (v16)            |
 | `react` / `react-dom`       | React v19                        |
 | `@radix-ui/*`               | Accessible UI primitives         |
 | `emoji-picker-react`        | Emoji picker                     |

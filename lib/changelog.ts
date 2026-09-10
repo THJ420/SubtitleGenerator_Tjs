@@ -8,7 +8,7 @@
  * - PATCH: Bug fixes and small improvements
  */
 
-export const APP_VERSION = "2.6.0";
+export const APP_VERSION = "2.7.0";
 
 export interface ChangelogEntry {
   version: string;
@@ -21,6 +21,48 @@ export interface ChangelogEntry {
 }
 
 export const changelog: ChangelogEntry[] = [
+  {
+    version: "2.7.0",
+    date: "2026-09-10",
+    title: "Subtitle timing, playback speed & recording audio",
+    changes: [
+      {
+        type: "added",
+        description:
+          "Adjust word and phrase timing with timeline handles, drag to move, arrow keys, or exact start and end fields. Undo and Reset are available.",
+      },
+      {
+        type: "added",
+        description:
+          "Preview video at 1×, 1.1×, 1.25×, or 1.5× speed while preserving speech pitch. Export speed stays unchanged.",
+      },
+      {
+        type: "changed",
+        description:
+          "Camera audio is captured on the audio thread and buffered for AAC encoding, with stereo support and a final audio flush when recording stops.",
+      },
+      {
+        type: "changed",
+        description:
+          "The transcription progress bar and 100% Local badge now use the yellow brand colors.",
+      },
+      {
+        type: "fixed",
+        description:
+          "Timing edits preserve original video cut positions and phrase grouping. Preview and subtitle exports use edited times, and timing Undo preserves text and style edits.",
+      },
+      {
+        type: "fixed",
+        description:
+          "Subtitle timing edits survive transcription updates. SRT and WebVTT timestamps round correctly to milliseconds, including minute boundaries.",
+      },
+      {
+        type: "fixed",
+        description:
+          "Stopping audio capture and draining the encoder now have a shared 15-second limit. Failed or cancelled audio finalization releases capture resources and reports an error instead of waiting indefinitely.",
+      },
+    ],
+  },
   {
     version: "2.6.0",
     date: "2026-09-09",

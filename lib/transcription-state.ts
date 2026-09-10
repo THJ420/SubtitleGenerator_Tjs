@@ -40,7 +40,10 @@ export function mergeTranscriptionUpdate(
     oldChunks.map((chunk) => [chunk.timestamp[0], chunk]),
   );
   const editedByTime = new Map(
-    previous.result.chunks.map((chunk) => [key(chunk), chunk]),
+    previous.result.chunks.map((chunk, index) => [
+      key(oldChunks[index] ?? chunk),
+      chunk,
+    ]),
   );
   let cursor = 0;
   let hasTextEdit = false;
@@ -79,6 +82,12 @@ export function mergeTranscriptionUpdate(
         .filter((field) => !Object.is(edited[field], source[field]))
         .map((field) => [field, edited[field]]),
     );
+    if (edited.sourceTimestamp) {
+      Object.assign(changes, {
+        timestamp: edited.timestamp,
+        sourceTimestamp: edited.sourceTimestamp,
+      });
+    }
     if ("text" in changes) hasTextEdit = true;
     return Object.keys(changes).length ? { ...chunk, ...changes } : chunk;
   });

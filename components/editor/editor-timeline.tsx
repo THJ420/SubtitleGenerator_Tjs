@@ -31,6 +31,14 @@ import {
 } from "@/lib/timeline";
 import { useTimelineThumbnails } from "@/hooks/useTimelineThumbnails";
 import type { TranscriptionResult } from "@/hooks/useTranscription";
+import { useSubtitleTiming } from "@/hooks/useSubtitleTiming";
+import { SubtitleTimingControls } from "./subtitle-timing-controls";
+import { PlaybackSpeed } from "./playback-speed";
+import type {
+  TimedSubtitle,
+  TimingAction,
+  TimingSelection,
+} from "@/lib/subtitle-timing";
 import styles from "./editor.module.css";
 
 interface EditorTimelineProps {
@@ -40,6 +48,9 @@ interface EditorTimelineProps {
   file?: File | null;
   fileName?: string;
   maxWordsPerLine: number;
+  mode: "word" | "phrase";
+  timingDisabled?: boolean;
+  onTimingChange: (chunks: TimedSubtitle[]) => void;
   silenceRemovalRanges?: TimeRange[];
   onSeek: (time: number) => void;
   onEdit: () => void;
@@ -64,6 +75,9 @@ export const EditorTimeline = memo(function EditorTimeline({
   file,
   fileName,
   maxWordsPerLine,
+  mode,
+  timingDisabled = false,
+  onTimingChange,
   silenceRemovalRanges = EMPTY_RANGES,
   onSeek,
   onEdit,
@@ -90,10 +104,114 @@ export const EditorTimeline = memo(function EditorTimeline({
   );
   const contentWidth = Math.max(viewport.width, safeDuration * scale);
   const thumbnails = useTimelineThumbnails(file, duration);
+  const timing = useSubtitleTiming(transcript.chunks, duration, onTimingChange);
+  const groupKey = `${mode}-${maxWordsPerLine}`;
+  const [selectionMode, setSelectionMode] = useState(groupKey);
+  const timingDrag = useRef<{
+    pointerId: number;
+    x: number;
+    scroll: number;
+    value: number;
+    action: TimingAction;
+  } | null>(null);
   const chunks = useMemo(
-    () => processTranscriptChunks(transcript, "phrase", maxWordsPerLine),
-    [transcript, maxWordsPerLine],
+    () => processTranscriptChunks(transcript, mode, maxWordsPerLine),
+    [transcript, mode, maxWordsPerLine],
   );
+  const selected = selectionMode === groupKey ? timing.selection : null;
+  const selectedFirst = selected
+    ? transcript.chunks[selected.first]
+    : undefined;
+  const selectedLast = selected ? transcript.chunks[selected.last] : undefined;
+  const selectionFor = (index: number): TimingSelection => {
+    const chunk = chunks[index];
+    return {
+      first: chunk.words?.[0]?.sourceIndex ?? chunk.sourceIndex ?? index,
+      last: chunk.words?.at(-1)?.sourceIndex ?? chunk.sourceIndex ?? index,
+    };
+  };
+  const selectClip = (index: number) => {
+    setSelectionMode(groupKey);
+    timing.select(selectionFor(index));
+    videoRef.current?.pause();
+    onSeek(chunks[index].timestamp[0]);
+  };
+  const beginTiming = (
+    event: PointerEvent<HTMLButtonElement>,
+    index: number,
+    action: TimingAction,
+  ) => {
+    if (timingDisabled || event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    selectClip(index);
+    timing.begin(selectionFor(index));
+    timingDrag.current = {
+      pointerId: event.pointerId,
+      x: event.clientX,
+      scroll: viewportRef.current?.scrollLeft ?? 0,
+      value:
+        action === "start"
+          ? chunks[index].timestamp[0]
+          : action === "end"
+            ? chunks[index].timestamp[1]
+            : 0,
+      action,
+    };
+    event.currentTarget.focus({ preventScroll: true });
+    event.currentTarget.setPointerCapture(event.pointerId);
+  };
+  const moveTiming = (event: PointerEvent<HTMLDivElement>) => {
+    const drag = timingDrag.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    event.stopPropagation();
+    const element = viewportRef.current;
+    if (element) {
+      const rect = element.getBoundingClientRect();
+      if (event.clientX > rect.right - 20) element.scrollLeft += 12;
+      else if (event.clientX < rect.left + 20) element.scrollLeft -= 12;
+    }
+    const delta =
+      (event.clientX - drag.x + (element?.scrollLeft ?? 0) - drag.scroll) /
+      scale;
+    timing.update(drag.action, drag.value + delta);
+  };
+  const finishTiming = (event: PointerEvent<HTMLDivElement>) => {
+    if (timingDrag.current?.pointerId !== event.pointerId) return;
+    event.stopPropagation();
+    if (event.type === "pointerup") moveTiming(event);
+    timingDrag.current = null;
+    timing.finish(event.type !== "pointerup");
+  };
+  const keyboardTiming = (
+    event: KeyboardEvent<HTMLButtonElement>,
+    index: number,
+    action: TimingAction,
+  ) => {
+    if (timingDisabled) return;
+    if (event.key === "Escape" && timingDrag.current) {
+      event.preventDefault();
+      timingDrag.current = null;
+      timing.finish(true);
+    }
+    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+    event.preventDefault();
+    event.stopPropagation();
+    selectClip(index);
+    timing.begin(selectionFor(index));
+    const delta =
+      (event.key === "ArrowLeft" ? -1 : 1) * (event.shiftKey ? 0.1 : 0.01);
+    timing.update(
+      action,
+      delta +
+        (action === "start"
+          ? chunks[index].timestamp[0]
+          : action === "end"
+            ? chunks[index].timestamp[1]
+            : 0),
+    );
+    timing.finish();
+  };
   const cutPlan = useMemo(
     () => createVideoCutPlan(duration, silenceRemovalRanges, transcript.chunks),
     [duration, silenceRemovalRanges, transcript],
@@ -400,6 +518,7 @@ export const EditorTimeline = memo(function EditorTimeline({
           >
             {playing ? <Pause /> : <Play fill="currentColor" />}
           </Button>
+          <PlaybackSpeed videoRef={videoRef} />
           <span className={styles.timelineClock}>
             <strong ref={clockRef}>0:00</strong> / {formatTime(safeDuration)}
           </span>
@@ -500,12 +619,15 @@ export const EditorTimeline = memo(function EditorTimeline({
             </div>
             <div className={styles.captionTrack}>
               {visibleChunks.map(({ chunk, index }) => (
-                <button
-                  key={`${chunk.timestamp[0]}-${index}`}
-                  type="button"
+                <div
+                  key={selectionFor(index).first}
+                  className={styles.captionClip}
                   data-clip={index}
+                  data-selected={
+                    selected?.first === selectionFor(index).first &&
+                    selected?.last === selectionFor(index).last
+                  }
                   title={chunk.text}
-                  aria-label={`Edit subtitle at ${formatTime(chunk.timestamp[0])}: ${chunk.text}`}
                   data-disabled={chunk.disabled || chunk.subtitleHidden}
                   style={{
                     left: Math.max(0, chunk.timestamp[0] * scale),
@@ -514,14 +636,46 @@ export const EditorTimeline = memo(function EditorTimeline({
                       (chunk.timestamp[1] - chunk.timestamp[0]) * scale - 2,
                     ),
                   }}
-                  onClick={() => {
-                    onSeek(chunk.timestamp[0]);
-                    paintPlayhead(chunk.timestamp[0]);
-                    onEdit();
-                  }}
+                  onPointerMove={moveTiming}
+                  onPointerUp={finishTiming}
+                  onPointerCancel={finishTiming}
+                  onLostPointerCapture={finishTiming}
                 >
-                  {chunk.text}
-                </button>
+                  <button
+                    type="button"
+                    className={styles.captionBody}
+                    aria-label={`Edit subtitle at ${formatTime(chunk.timestamp[0])}: ${chunk.text}`}
+                    aria-pressed={
+                      selected?.first === selectionFor(index).first &&
+                      selected?.last === selectionFor(index).last
+                    }
+                    disabled={timingDisabled}
+                    onPointerDown={(event) => beginTiming(event, index, "move")}
+                    onClick={(event) => {
+                      if (event.detail === 0) selectClip(index);
+                    }}
+                    onDoubleClick={onEdit}
+                    onKeyDown={(event) => keyboardTiming(event, index, "move")}
+                  >
+                    {chunk.text}
+                  </button>
+                  {(["start", "end"] as const).map((edge) => (
+                    <button
+                      key={edge}
+                      type="button"
+                      className={styles.timingHandle}
+                      data-edge={edge}
+                      aria-label={`Adjust subtitle ${edge}: ${chunk.text}`}
+                      title={`Drag to adjust ${edge}. Arrow keys adjust by 0.01 seconds.`}
+                      disabled={timingDisabled}
+                      onPointerDown={(event) => beginTiming(event, index, edge)}
+                      onClick={(event) => {
+                        if (event.detail === 0) selectClip(index);
+                      }}
+                      onKeyDown={(event) => keyboardTiming(event, index, edge)}
+                    />
+                  ))}
+                </div>
               ))}
             </div>
             <div className={styles.videoTrack} onPointerDown={beginScrub}>
@@ -565,12 +719,38 @@ export const EditorTimeline = memo(function EditorTimeline({
           </div>
         </div>
       </div>
+      {selected && selectedFirst && selectedLast ? (
+        <SubtitleTimingControls
+          key={`${mode}-${selected.first}-${selected.last}`}
+          text={transcript.chunks
+            .slice(selected.first, selected.last + 1)
+            .map((chunk) => chunk.text.trim())
+            .join(" ")}
+          start={selectedFirst.timestamp[0]}
+          end={selectedLast.timestamp[1]}
+          disabled={timingDisabled}
+          canUndo={timing.canUndo}
+          canReset={transcript.chunks
+            .slice(selected.first, selected.last + 1)
+            .some(
+              (chunk) =>
+                chunk.sourceTimestamp &&
+                chunk.timestamp.some(
+                  (time, edge) => time !== chunk.sourceTimestamp![edge],
+                ),
+            )}
+          onChange={timing.change}
+          onUndo={timing.undo}
+          onReset={timing.reset}
+          error={timing.error}
+        />
+      ) : null}
       <div className={styles.timelineFooter}>
         <span>
           {scrubError ||
             (cutPlan
               ? "Shaded sections are skipped in playback and export."
-              : "Drag the playhead to scrub · Select a subtitle to edit")}
+              : "Drag subtitle edges to resize · Drag the middle to move · Select for exact times")}
         </span>
         <span>Source timeline</span>
       </div>

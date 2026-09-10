@@ -36,6 +36,10 @@ import { WordStylePopover } from "@/components/word-style-popover";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import {
+  restoreSubtitleTiming,
+  type TimedSubtitle,
+} from "@/lib/subtitle-timing";
+import {
   Select,
   SelectContent,
   SelectItem,
@@ -783,6 +787,28 @@ export function MainApp({
     setMobilePanelOpen(true);
     setSelectedWordTimestamp(null);
   }, []);
+  const handleTimingChange = useCallback(
+    (snapshot: TimedSubtitle[]) => {
+      if (selectedWordTimestamp && result) {
+        const index = result.chunks.findIndex(
+          (chunk) =>
+            chunk.timestamp[0] === selectedWordTimestamp[0] &&
+            chunk.timestamp[1] === selectedWordTimestamp[1],
+        );
+        if (snapshot[index])
+          setSelectedWordTimestamp(snapshot[index].timestamp);
+      }
+      setResult((previous) =>
+        previous && previous.chunks.length === snapshot.length
+          ? {
+              ...previous,
+              chunks: restoreSubtitleTiming(previous.chunks, snapshot),
+            }
+          : previous,
+      );
+    },
+    [result, selectedWordTimestamp, setResult],
+  );
   useEffect(
     () => () => {
       silenceDetectionRunIdRef.current += 1;
@@ -1470,6 +1496,7 @@ export function MainApp({
           {result ? (
             <>
               <EditorTimeline
+                key={uploadKey}
                 videoRef={videoRef}
                 transcript={result}
                 duration={videoDuration}
@@ -1481,6 +1508,9 @@ export function MainApp({
                 }
                 fileName={uploadedFile?.name}
                 maxWordsPerLine={subtitleStyle.maxWordsPerLine}
+                mode={mode}
+                timingDisabled={isProcessing || isDownloadProcessing}
+                onTimingChange={handleTimingChange}
                 onSeek={handleSeek}
                 onEdit={showTranscript}
                 previewControls={

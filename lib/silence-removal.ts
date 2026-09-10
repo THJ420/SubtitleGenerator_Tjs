@@ -35,6 +35,7 @@ export function getPlaybackSkipTarget(
 export interface SilenceAdjustableChunk {
   text: string;
   timestamp: [number, number];
+  sourceTimestamp?: [number, number];
   disabled?: boolean;
   subtitleHidden?: boolean;
   dynamicPosition?: "behind" | "front";
@@ -154,7 +155,9 @@ export function createSilenceRemovalPlan(
 export function createVideoCutPlan(
   duration: number,
   silenceRanges: readonly TimeRange[],
-  chunks: ReadonlyArray<Pick<SilenceAdjustableChunk, "timestamp" | "disabled">>,
+  chunks: ReadonlyArray<
+    Pick<SilenceAdjustableChunk, "timestamp" | "sourceTimestamp" | "disabled">
+  >,
 ): SilenceRemovalPlan | null {
   if (!Number.isFinite(duration) || duration <= 0) return null;
   const removedRanges = [
@@ -162,8 +165,8 @@ export function createVideoCutPlan(
     ...chunks
       .filter((chunk) => chunk.disabled)
       .map((chunk) => ({
-        startTime: chunk.timestamp[0],
-        endTime: chunk.timestamp[1],
+        startTime: (chunk.sourceTimestamp ?? chunk.timestamp)[0],
+        endTime: (chunk.sourceTimestamp ?? chunk.timestamp)[1],
       })),
   ];
   return removedRanges.length > 0
@@ -240,6 +243,14 @@ export function adjustTranscriptChunksForSilenceRemoval<
       return {
         ...chunk,
         timestamp: [start, end] as [number, number],
+        // Keep grouping coordinates in the same time base as this output copy.
+        ...(chunk.sourceTimestamp
+          ? {
+              sourceTimestamp: chunk.sourceTimestamp.map((time) =>
+                sourceTimeToOutputTime(time, plan),
+              ) as [number, number],
+            }
+          : {}),
       };
     })
     .filter((chunk): chunk is T => chunk !== null);

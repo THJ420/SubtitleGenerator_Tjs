@@ -18,6 +18,7 @@ import panelStyles from "@/components/editor-panels.module.css";
 interface TranscriptChunk {
   text: string;
   timestamp: [number, number];
+  sourceTimestamp?: [number, number];
   disabled?: boolean;
   subtitleHidden?: boolean;
   dynamicPosition?: "behind" | "front";

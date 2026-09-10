@@ -36,6 +36,7 @@ export interface TranscriptionResult {
   chunks: Array<{
     text: string;
     timestamp: [number, number];
+    sourceTimestamp?: [number, number];
     disabled?: boolean;
     subtitleHidden?: boolean;
     dynamicPosition?: "behind" | "front";

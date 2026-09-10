@@ -1,6 +1,9 @@
 "use client";
 
-import { ensureAacEncoder } from "@/lib/aac-encoder";
+import {
+  createRecordingAudio,
+  type RecordingAudio,
+} from "@/lib/recording-audio";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { RefObject } from "react";
 import {
@@ -8,8 +11,6 @@ import {
   BufferTarget,
   Mp4OutputFormat,
   CanvasSource,
-  MediaStreamAudioTrackSource,
-  type AudioSource,
 } from "mediabunny";
 
 export type CameraState =
@@ -112,7 +113,7 @@ export function useCameraRecording(): UseCameraRecordingReturn {
   // MediaBunny refs
   const outputRef = useRef<Output | null>(null);
   const videoSourceRef = useRef<CanvasSource | null>(null);
-  const audioSourcesRef = useRef<AudioSource[]>([]);
+  const audioSourcesRef = useRef<RecordingAudio[]>([]);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const ctxRef = useRef<CanvasRenderingContext2D | null>(null);
   const frameIntervalRef = useRef<number | null>(null);
@@ -319,7 +320,7 @@ export function useCameraRecording(): UseCameraRecordingReturn {
       videoSourceRef.current = null;
 
       for (const src of audioSourcesRef.current) {
-        src.close();
+        await src.finish();
       }
       audioSourcesRef.current = [];
 
@@ -353,10 +354,15 @@ export function useCameraRecording(): UseCameraRecordingReturn {
     } catch (err) {
       if (operationId !== operationIdRef.current) return;
       console.error("Error finalizing MP4:", err);
-      await output.cancel().catch(() => {});
+      for (const audio of audioSourcesRef.current) audio.close();
+      audioSourcesRef.current = [];
+      // Do not keep the UI or camera waiting for a stalled encoder's cleanup.
+      void output.cancel().catch(() => {});
       outputRef.current = null;
       recordedBytesRef.current = null;
-      setError("Failed to finalize recording.");
+      setError(
+        err instanceof Error ? err.message : "Failed to finalize recording.",
+      );
       setState("error");
     } finally {
       if (operationId === operationIdRef.current) {
@@ -418,43 +424,24 @@ export function useCameraRecording(): UseCameraRecordingReturn {
       videoSourceRef.current = videoSource;
       output.addVideoTrack(videoSource, { frameRate: FRAME_RATE });
 
-      // Add audio tracks from the camera stream
-      const audioSources: AudioSource[] = [];
-      const audioTracks = streamRef.current.getAudioTracks();
-      for (const track of audioTracks) {
-        try {
-          const numberOfChannels = track.getSettings().channelCount || 2;
-          await ensureAacEncoder({
-            bitrate: 192_000,
-            numberOfChannels,
-            sampleRate: 48_000,
-          });
-          if (operationId !== operationIdRef.current) {
-            await output.cancel().catch(() => {});
-            return;
-          }
-          const audioSource = new MediaStreamAudioTrackSource(track, {
-            codec: "aac",
-            bitrate: 192_000,
-            transform: { sampleRate: 48_000, numberOfChannels },
-          });
-          audioSource.errorPromise.catch((e: unknown) =>
-            console.warn("Camera audio source error:", e),
-          );
-          audioSources.push(audioSource);
-          output.addAudioTrack(audioSource);
-        } catch (e) {
-          console.warn("Failed to add audio track:", e);
+      // Capture on the audio thread and queue complete blocks for AAC encoding.
+      for (const track of streamRef.current.getAudioTracks()) {
+        const audio = await createRecordingAudio(track);
+        if (operationId !== operationIdRef.current) {
+          audio.close();
+          await output.cancel().catch(() => {});
+          return;
         }
+        audioSourcesRef.current.push(audio);
+        output.addAudioTrack(audio.source);
       }
-      audioSourcesRef.current = audioSources;
-
       await output.start();
       if (operationId !== operationIdRef.current) {
         await output.cancel().catch(() => {});
         return;
       }
 
+      for (const audio of audioSourcesRef.current) audio.start();
       recordingStartRef.current = Date.now();
       lastFrameNumberRef.current = -1;
       readyForFrameRef.current = true;

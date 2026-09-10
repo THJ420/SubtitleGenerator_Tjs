@@ -62,9 +62,9 @@
   padding-inline: 17px;
 }
 .localBadge {
-  color: #127764;
-  background: #e8f9f3;
-  border: 1px solid #d7f2e9;
+  color: #735c00;
+  background: #fff6cd;
+  border: 1px solid #f4e6a6;
   display: inline-flex;
   align-items: center;
   gap: 7px;
@@ -76,7 +76,7 @@
 .localBadge > span {
   width: 7px;
   height: 7px;
-  background: #10b87a;
+  background: #e9bd00;
   border-radius: 50%;
 }
 .workspace {
@@ -422,7 +422,7 @@
 .timelineTransport strong {
   color: #141622;
 }
-.timelinePlayback > button {
+.timelinePlayback > button:first-child {
   border-radius: 50%;
 }
 .timelinePlayback {
@@ -543,7 +543,7 @@
   height: 48px;
   margin-top: 6px;
 }
-.captionTrack button {
+.captionClip {
   position: absolute;
   top: 0;
   height: 48px;
@@ -560,17 +560,121 @@
   background: #f8f8fa;
   cursor: pointer;
 }
-.captionTrack button:hover {
+.captionClip:hover {
   border-color: #d4c45b;
 }
-.captionTrack button[data-active="true"] {
+.captionClip[data-active="true"] {
   background: #fff2a3;
   color: #272414;
   border-color: #f0dd6c;
 }
-.captionTrack button[data-disabled="true"] {
+.captionClip[data-disabled="true"] {
   opacity: 0.45;
   text-decoration: line-through;
+}
+.captionClip {
+  padding: 0;
+  touch-action: none;
+  /* Caption handles must remain reachable when the playhead is at their edge. */
+  z-index: 4;
+}
+.captionClip[data-selected="true"] {
+  border-color: #d3b800;
+  box-shadow: inset 0 0 0 1px #d3b800;
+}
+.captionBody {
+  width: 100%;
+  height: 100%;
+  padding: 4px 12px;
+  overflow: hidden;
+  cursor: grab;
+  touch-action: none;
+  text-align: left;
+}
+.captionBody:active {
+  cursor: grabbing;
+}
+.timingHandle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 9px;
+  background: #ded8a9;
+  cursor: ew-resize;
+  touch-action: none;
+  opacity: 0;
+}
+.timingHandle[data-edge="start"] {
+  left: 0;
+}
+.timingHandle[data-edge="end"] {
+  right: 0;
+}
+.captionClip:hover .timingHandle,
+.captionClip[data-selected="true"] .timingHandle,
+.timingHandle:focus-visible {
+  opacity: 1;
+}
+.captionBody:focus-visible,
+.timingHandle:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: -2px;
+}
+.timingControls {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 10px 14px;
+  border-top: 1px solid var(--border);
+}
+.timingText {
+  flex: 1 1 100px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+.timingField {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+}
+.timingField input {
+  width: 90px;
+  height: 32px;
+  font-variant-numeric: tabular-nums;
+}
+.timingField [role="alert"],
+.timingError {
+  grid-column: 1 / -1;
+  flex-basis: 100%;
+  color: var(--destructive);
+  font-size: 12px;
+}
+@media (max-width: 767px) {
+  .timingControls {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px;
+    padding: 6px 8px;
+  }
+  .timingText {
+    grid-column: 1 / -1;
+  }
+  .timingField {
+    flex: 1;
+  }
+  .timingField input {
+    width: 100%;
+    min-width: 0;
+  }
+  .timingError {
+    grid-column: 1 / -1;
+  }
 }
 .videoTrack {
   position: relative;
@@ -721,15 +825,18 @@
   background: #efeff5;
   accent-color: #ffe600;
 }
-.exportProgress progress::-webkit-progress-bar {
+.exportProgress progress::-webkit-progress-bar,
+.headerProgress progress::-webkit-progress-bar {
   background: #efeff5;
   border-radius: 10px;
 }
-.exportProgress progress::-webkit-progress-value {
+.exportProgress progress::-webkit-progress-value,
+.headerProgress progress::-webkit-progress-value {
   background: linear-gradient(90deg, #e9bd00, #ffe600);
   border-radius: 10px;
 }
-.exportProgress progress::-moz-progress-bar {
+.exportProgress progress::-moz-progress-bar,
+.headerProgress progress::-moz-progress-bar {
   background: linear-gradient(90deg, #e9bd00, #ffe600);
   border-radius: 10px;
 }
@@ -760,9 +867,14 @@
   flex-shrink: 0;
 }
 .headerProgress progress {
+  appearance: none;
   width: 65px;
   height: 5px;
-  accent-color: #d6b900;
+  overflow: hidden;
+  border: 0;
+  border-radius: 10px;
+  background: #efeff5;
+  accent-color: #ffe600;
 }
 .emptyPrompt {
   text-align: center;
@@ -1183,7 +1295,7 @@
     height: 28px;
   }
 
-  .captionTrack button {
+  .captionClip {
     font-size: 11px;
     padding: 2px 4px;
   }
@@ -1376,7 +1488,7 @@
     height: 22px;
   }
   .captionTrack,
-  .captionTrack button {
+  .captionClip {
     height: 32px;
   }
   .captionTrack,
@@ -1503,7 +1615,7 @@
     min-height: 36px;
   }
   .editor[data-short="true"] .captionTrack,
-  .editor[data-short="true"] .captionTrack button {
+  .editor[data-short="true"] .captionClip {
     height: 24px;
   }
   .editor[data-short="true"] .videoTrack {
