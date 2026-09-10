@@ -88,12 +88,12 @@ Models available:
 
 The `@huggingface/transformers` ASR pipeline processes the whole audio then merges at the end, with no built-in way to get partial results per chunk. To support long videos and live previews, `app/worker.ts` replicates the pipeline's internal `_call_whisper` loop directly:
 
-1. **Chunk the audio** using the same 30s window / 5s stride / 20s jump that the pipeline uses internally.
+1. **Plan audio windows** using the same 30s window / 5s stride / 20s jump that the pipeline uses internally. Prepare features for one window immediately before generation, rather than preparing and retaining features for the whole video.
 2. **Call `model.generate()`** on each chunk with:
    - `return_timestamps: true` — embeds timestamp tokens in the output sequence. `_decode_asr` requires these to detect where each chunk's usable region starts and ends (stride filtering via `first_timestamp` / `last_timestamp`). Without them, multi-chunk merging silently skips content.
    - `return_token_timestamps: true` — uses DTW cross-attention alignment to produce per-token timestamps, enabling word-level output from `_decode_asr`.
 3. **Call `tokenizer._decode_asr(processedSoFar, { return_timestamps: "word" })`** after each chunk. This does stride-aware merging of all chunks processed so far and posts a partial `update` result to the main thread.
-4. After all chunks are processed, the final `_decode_asr` call produces the complete transcript.
+4. After all chunks are processed, reuse the last merged result as the complete transcript.
 
 This approach gives accuracy identical to the single full pipeline call (same chunking math, same merge logic) while streaming word-level results chunk by chunk.
 

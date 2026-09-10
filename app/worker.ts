@@ -296,10 +296,11 @@ async function handleRun({
 
     const start = performance.now();
 
-    // Build chunk list (feature extraction for each 30s window)
+    // Plan windows without preparing the entire recording up front. Extract
+    // features only when each window is about to run, then release them.
     type Chunk = {
       stride: number[]; // [length_samples, left_stride_samples, right_stride_samples]
-      input_features: unknown;
+      offset: number;
       is_last: boolean;
       tokens?: bigint[];
       token_timestamps?: number[];
@@ -309,7 +310,6 @@ async function handleRun({
     while (true) {
       const offset_end = offset + window_samples;
       const subarr = audio.subarray(offset, offset_end);
-      const feature = await proc(subarr);
       const is_first = offset === 0;
       const is_last = offset_end >= audio.length;
       chunks.push({
@@ -318,7 +318,7 @@ async function handleRun({
           is_first ? 0 : stride_samples,
           is_last ? 0 : stride_samples,
         ],
-        input_features: feature.input_features,
+        offset,
         is_last,
       });
       if (is_last) break;
@@ -328,11 +328,18 @@ async function handleRun({
     // Run model.generate() per chunk, streaming _decode_asr results after each one.
     // This is identical to _call_whisper's loop, just with an intermediate decode.
     const processed: Chunk[] = [];
+    let finalResult = {
+      text: "",
+      chunks: [] as Array<{ text: string; timestamp: [number, number] }>,
+    };
     for (let i = 0; i < chunks.length; i++) {
       const chunk = chunks[i];
+      const feature = await proc(
+        audio.subarray(chunk.offset, chunk.offset + window_samples),
+      );
 
       const data = await model.generate({
-        inputs: chunk.input_features,
+        inputs: feature.input_features,
         ...generation_config,
         num_frames: Math.floor(chunk.stride[0] / hop_length),
       });
@@ -357,31 +364,22 @@ async function handleRun({
         { chunks?: Array<{ text: string; timestamp: [number, number] }> },
       ];
 
+      finalResult = {
+        text: partialText,
+        chunks: partialOptional.chunks ?? [],
+      };
       self.postMessage({
         status: "update",
-        result: {
-          text: partialText,
-          chunks: partialOptional.chunks ?? [],
-        },
+        result: finalResult,
         progress: Math.round(((i + 1) / chunks.length) * 100),
       });
     }
 
     const end = performance.now();
 
-    // The last update already has the final result, but re-run for the complete message
-    const [fullText, fullOptional] = tokenizer._decode_asr(processed, {
-      time_precision,
-      return_timestamps: "word",
-      force_full_sequences: false,
-    }) as [
-      string,
-      { chunks?: Array<{ text: string; timestamp: [number, number] }> },
-    ];
-
     self.postMessage({
       status: "complete",
-      result: { text: fullText, chunks: fullOptional.chunks ?? [] },
+      result: finalResult,
       time: end - start,
     });
   } catch (error) {

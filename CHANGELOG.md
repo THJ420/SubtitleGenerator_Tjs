@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Camera audio is captured on the audio thread and buffered for AAC encoding, with stereo support and a final audio flush when recording stops.
 - The transcription progress bar and 100% Local badge now use the yellow brand colors.
+- Long videos now prepare one audio window at a time, so transcription can start before all windows are prepared. Completed windows no longer retain audio features, and the final transcript reuses the last merged result.
 
 ### Fixed
 

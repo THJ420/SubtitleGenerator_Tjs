@@ -47,6 +47,11 @@ export const changelog: ChangelogEntry[] = [
           "The transcription progress bar and 100% Local badge now use the yellow brand colors.",
       },
       {
+        type: "changed",
+        description:
+          "Long videos now prepare one audio window at a time, so transcription can start before all windows are prepared. Completed windows no longer retain audio features, and the final transcript reuses the last merged result.",
+      },
+      {
         type: "fixed",
         description:
           "Timing edits preserve original video cut positions and phrase grouping. Preview and subtitle exports use edited times, and timing Undo preserves text and style edits.",
