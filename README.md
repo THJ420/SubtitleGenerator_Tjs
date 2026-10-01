@@ -20,13 +20,74 @@ All model inference runs locally in the browser. Video and audio are processed o
 | Model                             | Task                                            | Library                                   |
 | --------------------------------- | ----------------------------------------------- | ----------------------------------------- |
 | **Whisper** (tiny / base / small) | Speech-to-text transcription, 100+ languages    | `@huggingface/transformers` (WebGPU/WASM) |
+| **Whisper Large-v3-Turbo**        | Fastest high-accuracy transcription, GPU only   | `@huggingface/transformers` (WebGPU)      |
+| **Whisper Medium**                | Highest accuracy, GPU only                      | `@huggingface/transformers` (WebGPU)      |
 | **MODNet** (`Xenova/modnet`)      | Background removal — person segmentation        | `@huggingface/transformers` (Web Worker)  |
 | **MediaPipe Blaze Face**          | Real-time face detection for subtitle placement | `@mediapipe/tasks-vision`                 |
+
+### Hardware capability check
+
+Model sizes range from ~75 MB to ~1.5 GB. Loading a model larger than the device
+can hold fails deep inside ONNX Runtime — after a long download, with an opaque
+error. So the modal probes the browser **before any download starts** and greys
+out models this machine cannot load:
+
+| Probe                       | Source                                       |
+| --------------------------- | -------------------------------------------- |
+| WebGPU adapter              | `navigator.gpu.requestAdapter()`             |
+| 16-bit float (fp16) support | `adapter.features.has("shader-f16")`         |
+| GPU buffer ceiling          | `adapter.limits.maxBufferSize`               |
+| GPU storage binding ceiling | `adapter.limits.maxStorageBufferBindingSize` |
+| Logical CPU cores           | `navigator.hardwareConcurrency`              |
+| System memory               | `navigator.deviceMemory` (Chromium only)     |
+
+### fp16 fallback
+
+`shader-f16` is an optional WebGPU feature. GTX 10-series GPUs and several
+Intel/AMD integrated GPUs do not implement it, and ONNX Runtime refuses an fp16
+graph at session creation with _"The device (webgpu) does not support fp16."_
+Because dtype is fixed when the session is created, the encoder dtype is chosen
+from the adapter at load time rather than hardcoded:
+
+| Adapter reports      | Turbo / Medium encoder     |
+| -------------------- | -------------------------- |
+| `shader-f16` present | `fp16` (1,215 MB / 586 MB) |
+| `shader-f16` absent  | `q4` (405 MB / 200 MB)     |
+
+The non-fp16 path deliberately uses **q4, not fp32**. 4-bit weights dequantize
+to fp32 on load, so no f16 arithmetic is involved — and fp32 is _larger_ than
+fp16 (2,430 MB for the Turbo encoder alone), so falling back to fp32 would trade
+a clear error for an out-of-memory crash on exactly the 2–4 GB cards this
+fallback targets. `q4f16` is never used, since that dtype itself requires
+`shader-f16`.
+
+`lib/hardware-check.ts` keeps the thresholds in one table
+(`MODEL_REQUIREMENTS`), so the UI and the runtime agree:
+
+| Model  | Requirement                                          |
+| ------ | ---------------------------------------------------- |
+| Tiny   | Any device                                           |
+| Base   | Any device                                           |
+| Small  | WebGPU recommended; otherwise 4+ cores / 4 GB        |
+| Turbo  | WebGPU; `maxBufferSize` ≥ 2 GB (fp16) or ≥ 1 GB (q4) |
+| Medium | Same, plus ≥ 8 GB RAM when reported                  |
+
+Buffer thresholds are the models' real ONNX footprints and therefore depend on
+the fp16 path the device will take — the q4 encoder is roughly a third of fp16,
+so a non-fp16 adapter is held to a **lower**, not higher, bar.
+
+Unavailable models stay visible but non-interactive, with the reason shown
+("WebGPU required", "Needs 1024 MB GPU buffer (have 256 MB)"). An **unknown**
+value never blocks a user: `deviceMemory` is absent on Firefox and Safari, so
+that constraint is only enforced when the browser actually reports it. An
+unknown `shader-f16` result is treated as _unsupported_, since assuming fp16 is
+safe is what produces the original error.
 
 ## Features
 
 - **100% local** — audio never leaves your device
 - **100+ languages** — Whisper multilingual models (tiny/base/small)
+- **5 model sizes** — Tiny, Base, Small, Large-v3-Turbo, and Medium, auto-gated to what your hardware can run
 - **25+ Google Fonts** — Bangers, Bebas Neue, Permanent Marker, Montserrat, and more
 - **Manual subtitles** — add your own subtitle chunks at any time range; word timings are generated so all styles apply
 - **Custom watermark** — optional `fatahtech.com` mark, toggleable in the editor, burned into exports when on
@@ -162,7 +223,19 @@ Models available:
 |------|------|-------|
 | Tiny | ~75 MB | Fastest |
 | Base | ~150 MB | Default |
-| Small | ~500 MB | Most accurate |
+| Small | ~500 MB | Most accurate on CPU |
+| Turbo | ~800 MB | Large-v3-Turbo, WebGPU only, fp16 encoder |
+| Medium | ~1.5 GB | Highest accuracy, WebGPU only, fp16 encoder |
+
+Turbo and Medium use an **fp16 encoder** rather than the fp32 encoder used by the
+smaller sizes. Their encoders are several times larger, and fp32 would exceed
+typical GPU buffer limits. They also never fall back to the WASM/CPU path —
+retrying a 1.5 GB model on CPU trades a clear error for an out-of-memory crash or
+a stall that outlasts the download.
+
+Model download progress is throttled before it crosses the worker boundary. A
+1.5 GB download emits thousands of network-chunk events, and posting each one
+floods the main thread with progress-bar renders.
 
 #### Streaming transcription — how it works
 

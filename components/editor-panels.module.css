@@ -455,21 +455,42 @@
   letter-spacing: -0.02em;
 }
 
+/*
+ * Fluid shell. Width tracks the viewport so the five cards get room on wide
+ * screens, and is clamped so it never looks stretched on ultrawides. Height is
+ * bounded by the viewport and scrolls internally, which matters on short
+ * laptop screens where the five cards plus the language picker would otherwise
+ * be clipped.
+ */
 .languageModal {
-  width: min(650px, calc(100vw - 32px));
-  max-width: 650px;
-  max-height: calc(100dvh - 40px);
+  width: min(92vw, 980px);
+  max-width: 980px;
+  max-height: 90dvh;
   overflow-y: auto;
+  overscroll-behavior: contain;
   gap: 0;
   border: 1px solid #fffefe;
-  border-radius: 20px;
-  padding: 30px;
+  border-radius: 22px;
+  padding: 32px;
   background:
     radial-gradient(ellipse at 0 0, #edf4ff, transparent 36%),
     radial-gradient(ellipse at 100% 15%, #fffbea, transparent 29%),
     radial-gradient(ellipse at 100% 70%, #f3eeff, transparent 45%), #fffefe;
   box-shadow: 0 30px 110px #25223635;
   font-family: var(--font-sans), sans-serif;
+}
+
+/* Height-driven tightening: on short viewports we reclaim vertical space
+ * before anything is allowed to clip. */
+@media (max-height: 700px) {
+  .languageModal {
+    padding: 22px 28px;
+  }
+
+  .languageForm {
+    gap: 16px;
+    padding-top: 18px;
+  }
 }
 
 .languageIcon {
@@ -519,43 +540,122 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
-  margin-bottom: 10px;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.modelChecking {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: -2px 0 12px;
+  color: #716b83;
+  font-size: 12px;
 }
 
 .localPill {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 7px;
   border-radius: 20px;
-  padding: 7px 11px;
+  padding: 8px 13px;
   background: #f4f3f6;
   color: #686379;
-  font-size: 11px;
+  font-size: 12px;
+  font-weight: 550;
 }
 
 .localPill svg {
-  width: 14px;
-  height: 14px;
+  width: 15px;
+  height: 15px;
   color: #d1a900;
   fill: #f7d627;
 }
 
+/*
+ * Explicit column counts rather than `auto-fit`/`minmax`: auto-fit sized each
+ * card from whatever width was left over, so the five cards ended up at
+ * visibly different sizes. Fixed track counts keep every card the same width
+ * and let the breakpoints own the responsive behaviour.
+ *
+ * 2 -> 3 -> 5 matches the five models exactly, so no row is ever left ragged.
+ */
 .modelOptions {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 12px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+@media (min-width: 560px) {
+  .modelOptions {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (min-width: 860px) {
+  .modelOptions {
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: 16px;
+  }
+}
+
+/** Hardware-gated option: visible, non-interactive, never selected. */
+.modelCardDisabled {
+  border-color: #e5e2eb;
+  background: #f6f5f8;
+  opacity: 0.5;
+  cursor: not-allowed;
+  filter: grayscale(1);
+}
+
+.modelCardDisabled:hover {
+  border-color: #e5e2eb;
+}
+
+.modelCardDisabled > span:first-child {
+  color: #8b8698;
+  background: #eceaf0;
+}
+
+.modelCardDisabled strong,
+.modelCardDisabled small {
+  color: #716b83;
+}
+
+.modelBlocked {
+  position: absolute;
+  right: 7px;
+  bottom: 7px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border-radius: 20px;
+  padding: 3px 8px;
+  color: #6b6780;
+  background: #eceaf0;
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+}
+
+/*
+ * The blocked badge is absolutely positioned over the card's bottom-right
+ * corner, so the reason text reserves that space. Without this the longer
+ * reasons ("Needs 2048 MB GPU buffer (have 1024 MB)") run underneath it.
+ */
+.modelCardDisabled .modelBody {
+  padding-bottom: 18px;
 }
 
 .modelCard {
   position: relative;
   display: flex;
-  min-height: 91px;
+  min-height: 122px;
   align-items: center;
-  gap: 11px;
+  gap: 13px;
   border: 1px solid #e5e2eb;
-  border-radius: 9px;
-  padding: 14px 11px;
+  border-radius: 12px;
+  padding: 16px 14px;
   background: #fffefe96;
   text-align: left;
   cursor: pointer;
@@ -568,20 +668,38 @@
   border-color: #b5b0c2;
 }
 
+/* Focus ring, keyboard-only, and offset outside the card so the border is not
+ * clipped by neighbouring grid items. */
+.modelCard:focus-visible {
+  outline: 2px solid #129b8b;
+  outline-offset: 2px;
+}
+
 .modelCard[aria-pressed="true"] {
   border-color: #129b8b;
   background: #eaf8f4a6;
 }
 
+/* Icon plate. `flex-shrink: 0` keeps it from collapsing when the description
+ * text wraps to several lines. */
 .modelCard > span:first-child {
   display: grid;
-  width: 37px;
-  height: 42px;
+  width: 46px;
+  height: 46px;
   flex-shrink: 0;
   place-items: center;
-  border-radius: 9px;
+  border-radius: 12px;
   color: #9564f5;
   background: #f1edff;
+}
+
+/* Text column takes the remaining track width and must be allowed to shrink,
+ * otherwise long descriptions push the card past its grid cell. */
+.modelBody {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
 }
 
 .modelCard[data-model="base"] > span:first-child {
@@ -594,27 +712,50 @@
   background: #fff0f3;
 }
 
+.modelCard[data-model="turbo"] > span:first-child {
+  color: #e07b39;
+  background: #fff1e6;
+}
+
+.modelCard[data-model="medium"] > span:first-child {
+  color: #6a5acd;
+  background: #eeecfb;
+}
+
 .modelCard strong {
   display: block;
-  font-size: 12px;
-  font-weight: 650;
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1.3;
+}
+
+/* Download-size tag, split out of the heading so it can stay visually
+ * subordinate to the model name. */
+.modelSize {
+  display: block;
+  margin-top: 2px;
+  color: #8b8698;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.35;
+  letter-spacing: 0.01em;
 }
 
 .modelCard small {
   display: block;
-  margin-top: 5px;
+  margin-top: 6px;
   color: #716b83;
-  font-size: 11px;
-  line-height: 1.45;
+  font-size: 12px;
+  line-height: 1.4;
 }
 
 .modelCheck {
   position: absolute;
-  top: 3px;
-  right: 3px;
+  top: 5px;
+  right: 5px;
   border: 2px solid #fffefe;
   border-radius: 50%;
-  padding: 1px;
+  padding: 2px;
   color: white;
   background: #129b8b;
 }
@@ -765,7 +906,7 @@
   .languageModal,
   .processingModal {
     border-radius: 16px;
-    padding: 22px;
+    padding: 20px;
   }
 
   .languageTitle {
@@ -777,28 +918,34 @@
   }
 
   .modelOptions {
-    gap: 7px;
+    gap: 10px;
   }
 
+  /* Two stacked columns of cards; the row layout has no room for a readable
+   * description at this width, so the icon moves above the text. */
   .modelCard {
-    min-height: 116px;
+    min-height: 124px;
     align-items: flex-start;
     flex-direction: column;
-    gap: 9px;
-    padding: 11px 9px;
+    gap: 10px;
+    padding: 13px 12px;
   }
 
   .modelCard > span:first-child {
-    width: 28px;
-    height: 29px;
+    width: 36px;
+    height: 36px;
   }
 
   .modelCard strong {
-    font-size: 10px;
+    font-size: 14px;
+  }
+
+  .modelSize {
+    font-size: 11px;
   }
 
   .modelCard small {
-    font-size: 10px;
+    font-size: 11px;
   }
 
   .localPill {

@@ -28,6 +28,17 @@ import {
   initialTranscriptionState,
   transcriptionReducer,
 } from "../lib/transcription-state";
+import {
+  MODEL_REQUIREMENTS,
+  evaluateModelCapability,
+  getEncoderDtype,
+  getModelRequirement,
+  pickDefaultModelSize,
+  requiresWebGPU,
+  type HardwareCapabilities,
+  type ModelCapability,
+  type ModelSize,
+} from "../lib/hardware-check";
 import type { TranscriptionResult } from "../hooks/useTranscription";
 
 const words = (): TranscriptionResult["chunks"] => [
@@ -371,8 +382,10 @@ test("editing a manual subtitle rebuilds its word timings and keeps word styles"
   // Per-word styles are preserved by index.
   assert.equal(edited.words?.[1].styleOverride?.color, "#FF0000");
   // Chunks without stored words only change their text.
-  const plain: { text: string; words?: SubtitleWordTiming[] } =
-    updateChunkText({ text: "old", timestamp: [0, 1] }, " new text ");
+  const plain: { text: string; words?: SubtitleWordTiming[] } = updateChunkText(
+    { text: "old", timestamp: [0, 1] },
+    " new text ",
+  );
   assert.equal(plain.text, "new text");
   assert.equal(plain.words, undefined);
 });
@@ -383,18 +396,30 @@ test("moving or undoing a subtitle keeps its word timings in sync", () => {
     timestamp: [1, 3] as [number, number],
     words: buildWordTimings("a b", [1, 3]),
   };
-  const moved = editSubtitleTiming([chunk], { first: 0, last: 0 }, "move", 2, 10);
+  const moved = editSubtitleTiming(
+    [chunk],
+    { first: 0, last: 0 },
+    "move",
+    2,
+    10,
+  );
   assert.deepEqual(moved[0].timestamp, [3, 5]);
-  assert.deepEqual(moved[0].words?.map((word) => word.timestamp), [
-    [3, 4],
-    [4, 5],
-  ]);
+  assert.deepEqual(
+    moved[0].words?.map((word) => word.timestamp),
+    [
+      [3, 4],
+      [4, 5],
+    ],
+  );
   const undone = restoreSubtitleTiming(moved, [chunk]);
   assert.deepEqual(undone[0].timestamp, [1, 3]);
-  assert.deepEqual(undone[0].words?.map((word) => word.timestamp), [
-    [1, 2],
-    [2, 3],
-  ]);
+  assert.deepEqual(
+    undone[0].words?.map((word) => word.timestamp),
+    [
+      [1, 2],
+      [2, 3],
+    ],
+  );
   // A zero-length target span collapses words without producing NaN.
   for (const word of rescaleWordTimings(
     buildWordTimings("a b c", [0, 3]),
@@ -429,6 +454,198 @@ test("cut exports remap manual word timings into the output time base", () => {
   );
 });
 
+const MB = 1024 * 1024;
+
+function caps(
+  overrides: Partial<HardwareCapabilities> = {},
+): HardwareCapabilities {
+  return {
+    webgpu: false,
+    maxBufferSize: null,
+    maxStorageBufferBindingSize: null,
+    hardwareConcurrency: 8,
+    deviceMemoryGB: 8,
+    supportsFp16: null,
+    ...overrides,
+  };
+}
+
+function evaluate(
+  model: ModelSize,
+  capabilities: HardwareCapabilities,
+): ModelCapability {
+  const requirement = getModelRequirement(model);
+  assert.ok(requirement, `missing requirement for ${model}`);
+  return evaluateModelCapability(requirement, capabilities);
+}
+
+test("tiny and base stay available on CPU-only devices", () => {
+  for (const model of ["tiny", "base"] as ModelSize[]) {
+    assert.equal(evaluate(model, caps()).supported, true, model);
+  }
+});
+
+test("turbo and medium require WebGPU and are blocked without it", () => {
+  const cpuOnly = caps({ webgpu: false });
+  for (const model of ["turbo", "medium"] as ModelSize[]) {
+    const result = evaluate(model, cpuOnly);
+    assert.equal(result.supported, false, model);
+    assert.equal(result.reason, "WebGPU required", model);
+  }
+  assert.equal(requiresWebGPU("turbo"), true);
+  assert.equal(requiresWebGPU("medium"), true);
+  assert.equal(requiresWebGPU("small"), false);
+});
+
+test("large models are blocked when the GPU buffer limit is too small", () => {
+  // WebGPU present but a 256 MB ceiling (the classic Chrome default).
+  const smallBuffer = caps({
+    webgpu: true,
+    maxBufferSize: 256 * MB,
+    maxStorageBufferBindingSize: 128 * MB,
+  });
+  const turbo = evaluate("turbo", smallBuffer);
+  assert.equal(turbo.supported, false);
+  assert.match(String(turbo.reason), /Needs 1024 MB GPU buffer/);
+
+  const medium = evaluate("medium", smallBuffer);
+  assert.equal(medium.supported, false);
+
+  // A large enough buffer passes the VRAM gate.
+  const bigBuffer = caps({
+    webgpu: true,
+    maxBufferSize: 2048 * MB,
+    maxStorageBufferBindingSize: 2048 * MB,
+  });
+  assert.equal(evaluate("turbo", bigBuffer).supported, true);
+  assert.equal(evaluate("medium", bigBuffer).supported, true);
+});
+
+// The core of the fp16 fix: an fp16 graph on a device without `shader-f16`
+// makes ORT throw "The device (webgpu) does not support fp16." The encoder
+// dtype must therefore depend on the adapter, not be hardcoded.
+test("encoder dtype follows shader-f16 support", () => {
+  assert.equal(getEncoderDtype("turbo", true), "fp16");
+  assert.equal(getEncoderDtype("medium", true), "fp16");
+  // Without fp16 we drop to 4-bit, never fp32: fp32 is 2,430 MB for turbo and
+  // would OOM the low-VRAM GPUs this path exists for.
+  assert.equal(getEncoderDtype("turbo", false), "q4");
+  assert.equal(getEncoderDtype("medium", false), "q4");
+  // Small models are unaffected and keep their validated fp32 encoder.
+  assert.equal(getEncoderDtype("small", true), "fp32");
+  assert.equal(getEncoderDtype("small", false), "fp32");
+  assert.equal(getEncoderDtype("tiny", false), "fp32");
+  assert.equal(getEncoderDtype("base", false), "fp32");
+});
+
+test("missing fp16 support lowers the required GPU buffer for large models", () => {
+  // A 1024 MB adapter can run Turbo on the q4 path but not the fp16 path,
+  // whose encoder alone is 1,215 MB.
+  const oneGig = caps({
+    webgpu: true,
+    maxBufferSize: 1024 * MB,
+    maxStorageBufferBindingSize: 1024 * MB,
+    deviceMemoryGB: 8,
+  });
+  const withFp16 = evaluate("turbo", { ...oneGig, supportsFp16: true });
+  const withoutFp16 = evaluate("turbo", { ...oneGig, supportsFp16: false });
+  assert.equal(withFp16.supported, false);
+  assert.match(String(withFp16.reason), /Needs 2048 MB GPU buffer/);
+  assert.equal(withoutFp16.supported, true);
+
+  // Medium's q4 footprint (200 MB encoder + 448 MB decoder) also fits.
+  assert.equal(
+    evaluate("medium", { ...oneGig, supportsFp16: false }).supported,
+    true,
+  );
+  // Unknown fp16 support must not be read as "fp16 is safe": it takes the
+  // conservative q4 requirement.
+  assert.equal(
+    evaluate("turbo", { ...oneGig, supportsFp16: null }).supported,
+    true,
+  );
+});
+
+test("an unreported GPU buffer limit blocks GPU-only models", () => {
+  const unknownLimit = caps({ webgpu: true, maxBufferSize: null });
+  const result = evaluate("turbo", unknownLimit);
+  assert.equal(result.supported, false);
+  assert.equal(result.reason, "GPU buffer limit unknown");
+});
+
+test("medium needs 8 GB RAM when RAM is reported but not when it is not", () => {
+  const lowRam = caps({
+    webgpu: true,
+    maxBufferSize: 2048 * MB,
+    maxStorageBufferBindingSize: 2048 * MB,
+    deviceMemoryGB: 4,
+  });
+  const blocked = evaluate("medium", lowRam);
+  assert.equal(blocked.supported, false);
+  assert.match(String(blocked.reason), /Needs 8 GB system memory/);
+
+  // Firefox/Safari do not implement deviceMemory. Unknown must not block.
+  const unknownRam = caps({
+    webgpu: true,
+    maxBufferSize: 2048 * MB,
+    maxStorageBufferBindingSize: 2048 * MB,
+    deviceMemoryGB: null,
+  });
+  assert.equal(evaluate("medium", unknownRam).supported, true);
+});
+
+test("small is gated on CPU cores and RAM but never blocked on unknowns", () => {
+  const weak = caps({ hardwareConcurrency: 2, deviceMemoryGB: 2 });
+  assert.equal(evaluate("small", weak).supported, false);
+  assert.match(
+    String(evaluate("small", weak).reason),
+    /CPU cores|system memory/,
+  );
+
+  const unknownCpu = caps({ hardwareConcurrency: null, deviceMemoryGB: null });
+  assert.equal(evaluate("small", unknownCpu).supported, true);
+});
+
+test("every model size is described and the default picks the largest usable", () => {
+  assert.deepEqual(
+    MODEL_REQUIREMENTS.map((entry) => entry.value),
+    ["tiny", "base", "small", "turbo", "medium"],
+  );
+  for (const entry of MODEL_REQUIREMENTS) {
+    assert.ok(entry.label.length > 0);
+    assert.ok(entry.approxSizeMB > 0);
+  }
+  // Sizes should increase monotonically for a sensible UI ordering.
+  const sizes = MODEL_REQUIREMENTS.map((entry) => entry.approxSizeMB);
+  for (let i = 1; i < sizes.length; i += 1) {
+    assert.ok(sizes[i] > sizes[i - 1], `size order at index ${i}`);
+  }
+
+  const all: Record<ModelSize, ModelCapability> = {
+    tiny: { supported: true },
+    base: { supported: true },
+    small: { supported: true },
+    turbo: { supported: false, reason: "WebGPU required" },
+    medium: { supported: false, reason: "WebGPU required" },
+  };
+  assert.equal(pickDefaultModelSize(all), "small");
+
+  const gpuOnly: Record<ModelSize, ModelCapability> = {
+    ...all,
+    turbo: { supported: true },
+  };
+  assert.equal(pickDefaultModelSize(gpuOnly), "turbo");
+
+  const nothing: Record<ModelSize, ModelCapability> = {
+    tiny: { supported: false, reason: "no" },
+    base: { supported: false, reason: "no" },
+    small: { supported: false, reason: "no" },
+    turbo: { supported: false, reason: "no" },
+    medium: { supported: false, reason: "no" },
+  };
+  assert.equal(pickDefaultModelSize(nothing), "tiny");
+});
+
 test("word timings survive streaming ASR merges", () => {
   const initial: TranscriptionResult = {
     text: "One two",
@@ -458,9 +675,7 @@ test("word timings survive streaming ASR merges", () => {
   assert.equal(state.result?.chunks.length, 3);
   // A later worker snapshot must not drop the manual word timings.
   state = transcriptionReducer(state, { type: "worker", result: initial });
-  const manual = state.result?.chunks.find(
-    (chunk) => chunk.timestamp[0] === 2,
-  );
+  const manual = state.result?.chunks.find((chunk) => chunk.timestamp[0] === 2);
   assert.deepEqual(
     manual?.words?.map((word) => word.text),
     ["Manual", "line"],

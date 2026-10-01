@@ -5,35 +5,104 @@ import {
 import {
   ModelDownloadTracker,
   type ModelFileProgress,
+  type ModelLoadingState,
 } from "../lib/transcription-progress";
 import {
   getModelLoadingErrorMessage,
   isModelNetworkError,
 } from "../lib/transcription-errors";
+import {
+  getEncoderDtype,
+  requiresWebGPU,
+  type ModelSize,
+} from "../lib/hardware-check";
+
+export type { ModelSize };
 
 type DeviceType = "webgpu" | "wasm";
-export type ModelSize = "tiny" | "base" | "small";
 
+/**
+ * `_timestamped` variants are required, not optional: this worker replicates
+ * the pipeline's internal `_call_whisper` loop and calls
+ * `tokenizer._decode_asr(..., { return_timestamps: "word" })`, which needs the
+ * alignment-head token timestamps those repos expose. The plain
+ * `onnx-community/whisper-*` repos do not emit `token_timestamps`, so swapping
+ * to them would silently drop word-level subtitle timing.
+ */
 const MODEL_IDS: Record<ModelSize, string> = {
   tiny: "onnx-community/whisper-tiny_timestamped",
   base: "onnx-community/whisper-base_timestamped",
   small: "onnx-community/whisper-small_timestamped",
+  turbo: "onnx-community/whisper-large-v3-turbo_timestamped",
+  medium: "onnx-community/whisper-medium_timestamped",
 };
 
-// Device configurations optimized as sample app
-const PER_DEVICE_CONFIG = {
-  webgpu: {
+/**
+ * WebGPU exposes `navigator.gpu` in workers as well as windows, so the dtype
+ * decision is made here rather than round-tripped over `postMessage`. Probing
+ * in the worker keeps the flag next to the code that consumes it, and the
+ * result is cached so a model switch does not re-probe the adapter.
+ */
+let cachedSupportsFp16: boolean | null = null;
+
+async function detectShaderF16Support(): Promise<boolean> {
+  if (cachedSupportsFp16 !== null) return cachedSupportsFp16;
+  try {
+    const gpu = (
+      navigator as Navigator & {
+        gpu?: { requestAdapter?: () => Promise<unknown> };
+      }
+    ).gpu;
+    if (!gpu || typeof gpu.requestAdapter !== "function") {
+      cachedSupportsFp16 = false;
+      return false;
+    }
+    const adapter = (await gpu.requestAdapter()) as {
+      features?: { has: (feature: string) => boolean };
+    } | null;
+    // No adapter, or no feature set, means fp16 must not be assumed.
+    cachedSupportsFp16 = adapter?.features
+      ? adapter.features.has("shader-f16")
+      : false;
+    return cachedSupportsFp16;
+  } catch {
+    cachedSupportsFp16 = false;
+    return false;
+  }
+}
+
+/** Drop the cached fp16 flag, e.g. when the GPU pipeline is torn down. */
+function resetFp16Cache(): void {
+  cachedSupportsFp16 = null;
+}
+
+/**
+ * Per-model dtype for the WebGPU path.
+ *
+ * Turbo and Medium use an fp16 encoder only when the adapter reports
+ * `shader-f16`. Without it, ONNX Runtime fails session creation with "The
+ * device (webgpu) does not support fp16.", so we drop to a 4-bit encoder
+ * instead. `getEncoderDtype` owns that rule so the UI's capability gating and
+ * this runtime choice cannot drift apart.
+ */
+function getPipelineOptions(
+  modelSize: ModelSize,
+  device: DeviceType,
+  supportsFp16: boolean,
+) {
+  if (device === "wasm") {
+    return { dtype: "q8" as const, device: "wasm" as const };
+  }
+  return {
     dtype: {
-      encoder_model: "fp32" as const,
+      encoder_model: getEncoderDtype(modelSize, supportsFp16),
+      // 4-bit decoder on every WebGPU path: accuracy loss is negligible here and
+      // it roughly halves decoder residency, which matters most without fp16.
       decoder_model_merged: "q4" as const,
     },
     device: "webgpu" as const,
-  },
-  wasm: {
-    dtype: "q8" as const,
-    device: "wasm" as const,
-  },
-};
+  };
+}
 
 /**
  * Simplified singleton pattern like the sample app
@@ -46,6 +115,8 @@ class PipelineSingleton {
     const previous = this.instance;
     this.instance = null;
     this.currentModelId = null;
+    // Adapter capabilities are re-probed for the next load.
+    resetFp16Cache();
     void previous?.then((pipeline) => pipeline.dispose()).catch(() => {});
   }
 
@@ -63,9 +134,13 @@ class PipelineSingleton {
 
     if (!this.instance) {
       this.currentModelId = modelId;
+      // Probe before constructing the pipeline: the dtype is fixed at session
+      // creation, and an fp16 graph on a non-fp16 device is a hard failure.
+      const supportsFp16 =
+        device === "webgpu" ? await detectShaderF16Support() : false;
       // @ts-expect-error - Transformers.js pipeline types produce complex union that TS cannot resolve
       this.instance = pipeline("automatic-speech-recognition", modelId, {
-        ...PER_DEVICE_CONFIG[device],
+        ...getPipelineOptions(modelSize, device, supportsFp16),
         ...(progress_callback && { progress_callback }),
       });
     }
@@ -85,8 +160,16 @@ function shouldFallbackToWasm(
   error: unknown,
   device: DeviceType,
   fallbackAttempted: boolean,
+  modelSize: ModelSize,
 ): boolean {
   if (device !== "webgpu" || fallbackAttempted || isModelNetworkError(error)) {
+    return false;
+  }
+
+  // GPU-only models exceed practical WASM memory budgets. Retrying on CPU
+  // would trade a clear failure for an out-of-memory crash or a stall that
+  // outlasts the download, so report the error instead.
+  if (requiresWebGPU(modelSize)) {
     return false;
   }
 
@@ -98,6 +181,57 @@ function shouldFallbackToWasm(
     message.includes("webgpu") ||
     message.includes("out of memory")
   );
+}
+
+/**
+ * Model download progress arrives per network chunk. A 1.5 GB model emits
+ * thousands of events, and posting each one floods the main thread with
+ * layout work. Throttle to a readable rate while always forwarding the final
+ * state so the progress bar never stalls short of 100%.
+ */
+function createThrottledReporter(
+  emit: (state: ModelLoadingState) => void,
+  intervalMs = 120,
+) {
+  let lastEmit = 0;
+  let pending: ModelLoadingState | null = null;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+
+  const flush = () => {
+    if (timer) {
+      clearTimeout(timer);
+      timer = null;
+    }
+    if (pending) {
+      const state = pending;
+      pending = null;
+      lastEmit = Date.now();
+      emit(state);
+    }
+  };
+
+  return (state: ModelLoadingState) => {
+    // Terminal phases must land immediately; they are not progress updates.
+    const isTerminal = state.phase !== "downloading";
+    if (isTerminal) {
+      flush();
+      emit(state);
+      return;
+    }
+
+    const now = Date.now();
+    const elapsed = now - lastEmit;
+    if (elapsed >= intervalMs) {
+      flush();
+      emit(state);
+      return;
+    }
+
+    pending = state;
+    if (!timer) {
+      timer = setTimeout(flush, intervalMs - elapsed);
+    }
+  };
 }
 
 function resetPipelineState(): void {
@@ -154,10 +288,10 @@ async function handleLoad({
     }
 
     const tracker = new ModelDownloadTracker();
-    const reportLoading = (loading = tracker.snapshot()) => {
+    const reportLoading = createThrottledReporter((loading) => {
       self.postMessage({ status: "model-loading", loading, device });
-    };
-    reportLoading();
+    });
+    reportLoading(tracker.snapshot());
 
     loadPromise = (async () => {
       try {
@@ -195,7 +329,7 @@ async function handleLoad({
     self.postMessage({ status: "model-ready", device: activeDevice });
   } catch (error) {
     console.error("Worker: Error loading model:", error);
-    if (shouldFallbackToWasm(error, device, fallbackAttempted)) {
+    if (shouldFallbackToWasm(error, device, fallbackAttempted, modelSize)) {
       resetPipelineState();
       notifyWasmFallback();
       await handleLoad({
@@ -235,22 +369,27 @@ async function handleRun({
   fallbackAttempted?: boolean;
 }) {
   let loadingModel = true;
+  // Resolve before the try block so the catch path can report the same model
+  // and device the attempt actually used.
+  const targetDevice = device ?? activeDevice ?? "wasm";
+  const targetModelSize = modelSize ?? activeModelSize ?? "base";
   try {
     if (loadPromise) {
       await loadPromise;
     }
 
-    const targetDevice = device ?? activeDevice ?? "wasm";
-    const targetModelSize = modelSize ?? activeModelSize ?? "base";
     const tracker = new ModelDownloadTracker();
+    const reportProgress = createThrottledReporter((loading) => {
+      self.postMessage({
+        status: "model-loading",
+        loading,
+        device: targetDevice,
+      });
+    });
     const transcriber = await PipelineSingleton.getInstance(
       targetModelSize,
       (progressInfo) => {
-        self.postMessage({
-          status: "model-loading",
-          loading: tracker.update(progressInfo),
-          device: targetDevice,
-        });
+        reportProgress(tracker.update(progressInfo));
       },
       targetDevice,
     );
@@ -384,15 +523,21 @@ async function handleRun({
     });
   } catch (error) {
     console.error("Worker: Error in transcription:", error);
-    const failedDevice = device ?? activeDevice ?? "wasm";
-    if (shouldFallbackToWasm(error, failedDevice, fallbackAttempted)) {
+    if (
+      shouldFallbackToWasm(
+        error,
+        targetDevice,
+        fallbackAttempted,
+        targetModelSize,
+      )
+    ) {
       resetPipelineState();
       notifyWasmFallback();
       await handleRun({
         audio,
         language,
         device: "wasm",
-        modelSize,
+        modelSize: targetModelSize,
         fallbackAttempted: true,
       });
       return;

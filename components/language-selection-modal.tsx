@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   Dialog,
   DialogContent,
@@ -21,7 +21,14 @@ import {
   Video,
   Loader2,
   Zap,
+  AlertTriangle,
+  Cpu,
 } from "lucide-react";
+import {
+  MODEL_REQUIREMENTS,
+  checkModelCapabilities,
+  type ModelCapability,
+} from "@/lib/hardware-check";
 import type { ModelSize } from "@/hooks/useTranscription";
 import panelStyles from "@/components/editor-panels.module.css";
 
@@ -33,27 +40,23 @@ interface LanguageSelectionModalProps {
   defaultModelSize?: ModelSize;
 }
 
-const MODEL_SIZE_OPTIONS: {
-  value: ModelSize;
-  label: string;
-  description: string;
-}[] = [
-  {
-    value: "tiny",
-    label: "Tiny (~75MB)",
-    description: "Fastest, lower accuracy",
-  },
-  {
-    value: "base",
-    label: "Base (~150MB)",
-    description: "Balanced speed & accuracy",
-  },
-  {
-    value: "small",
-    label: "Small (~500MB)",
-    description: "Most accurate, slower",
-  },
-];
+/** Every size renders as supported until the probe resolves. `null` means the
+ * probe has not finished, so the list never flashes greyed out on open. */
+type CapabilityMap = Record<string, ModelCapability | null>;
+
+const SUPPORTED: ModelCapability = { supported: true };
+
+/**
+ * Requirement labels bundle the name and the download size
+ * ("Turbo (~800MB)"). They are split so the size can be typeset as a
+ * secondary tag instead of inheriting the model's heading size.
+ */
+function splitLabel(label: string): { name: string; size: string | null } {
+  const match = /^(.*?)\s*(\(.+\))$/.exec(label);
+  return match
+    ? { name: match[1], size: match[2] }
+    : { name: label, size: null };
+}
 
 export function LanguageSelectionModal({
   open,
@@ -67,8 +70,53 @@ export function LanguageSelectionModal({
   const [selectedModelSize, setSelectedModelSize] =
     useState<ModelSize>(defaultModelSize);
   const [isProcessing, setIsProcessing] = useState(false);
+  // `null` means the probe has not resolved yet. Deriving `isChecking` from it
+  // avoids a synchronous setState in the effect, which would trigger a
+  // cascading render on every modal open.
+  const [capabilities, setCapabilities] = useState<CapabilityMap | null>(null);
+
+  // Probe hardware each time the modal opens. Re-checking on open matters
+  // because GPU availability can change (driver reload, tab moved to a
+  // different machine profile), and a stale verdict would offer a model that
+  // can no longer load.
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    checkModelCapabilities()
+      .then((result) => {
+        if (cancelled) return;
+        setCapabilities(result);
+        // Never leave the selection on a model this device cannot load.
+        setSelectedModelSize((current) =>
+          result[current]?.supported ? current : "base",
+        );
+      })
+      .catch(() => {
+        // A failed probe must not block the modal; fall back to permissive
+        // so the user can still pick a small model.
+        if (!cancelled) setCapabilities({});
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open]);
+
+  const isChecking = capabilities === null;
+  const capabilityOf = (modelSize: ModelSize): ModelCapability =>
+    capabilities?.[modelSize] ?? SUPPORTED;
+
+  const selectModel = useCallback(
+    (modelSize: ModelSize) => {
+      // Ignore clicks on unavailable options so a stale pointer event or
+      // keyboard activation cannot bypass the disabled state.
+      if (capabilities?.[modelSize]?.supported === false) return;
+      setSelectedModelSize(modelSize);
+    },
+    [capabilities],
+  );
 
   const handleConfirm = () => {
+    if (capabilityOf(selectedModelSize).supported === false) return;
     setIsProcessing(true);
     onConfirm(selectedLanguage, selectedModelSize);
     // Modal will auto-close when transcription status changes
@@ -109,36 +157,78 @@ export function LanguageSelectionModal({
                 <Zap aria-hidden="true" /> Runs in your browser
               </span>
             </div>
+            {isChecking ? (
+              <p className={panelStyles.modelChecking} role="status">
+                <Loader2
+                  size={12}
+                  className="animate-spin"
+                  aria-hidden="true"
+                />
+                Checking this device&rsquo;s GPU and memory&hellip;
+              </p>
+            ) : null}
             <div
               className={panelStyles.modelOptions}
               role="group"
               aria-labelledby="model-size-label"
             >
-              {MODEL_SIZE_OPTIONS.map((option) => {
-                const isActive = selectedModelSize === option.value;
+              {MODEL_REQUIREMENTS.map((option) => {
+                const capability = capabilityOf(option.value);
+                const isUnsupported = capability.supported === false;
+                const isActive =
+                  selectedModelSize === option.value && !isUnsupported;
+                const reason = capability.reason;
+                const { name, size } = splitLabel(option.label);
                 return (
                   <button
                     key={option.value}
                     type="button"
                     aria-pressed={isActive}
+                    aria-disabled={isUnsupported || undefined}
                     data-model={option.value}
-                    disabled={isProcessing}
-                    onClick={() => setSelectedModelSize(option.value)}
-                    className={panelStyles.modelCard}
+                    data-unsupported={isUnsupported || undefined}
+                    disabled={isProcessing || isUnsupported}
+                    title={
+                      isUnsupported
+                        ? `${option.label} is unavailable on this device: ${reason}`
+                        : `${option.label} — ${option.description}`
+                    }
+                    onClick={() => selectModel(option.value)}
+                    className={`${panelStyles.modelCard} ${
+                      isUnsupported ? panelStyles.modelCardDisabled : ""
+                    }`}
                   >
                     <span>
-                      <Zap size={22} fill="currentColor" aria-hidden="true" />
+                      {isUnsupported ? (
+                        <AlertTriangle size={26} aria-hidden="true" />
+                      ) : (
+                        <Zap size={26} fill="currentColor" aria-hidden="true" />
+                      )}
                     </span>
-                    <span>
-                      <strong>{option.label}</strong>
-                      <small>{option.description}</small>
+                    <span className={panelStyles.modelBody}>
+                      <strong>{name}</strong>
+                      {size ? (
+                        <span className={panelStyles.modelSize}>{size}</span>
+                      ) : null}
+                      <small>
+                        {isUnsupported && reason ? reason : option.description}
+                      </small>
                     </span>
                     {isActive ? (
                       <Check
-                        size={20}
+                        size={24}
                         className={panelStyles.modelCheck}
                         aria-hidden="true"
                       />
+                    ) : null}
+                    {isUnsupported ? (
+                      <span
+                        className={panelStyles.modelBlocked}
+                        aria-hidden="true"
+                      >
+                        <Cpu size={13} />
+                        Unavailable
+                      </span>
                     ) : null}
                   </button>
                 );
@@ -171,7 +261,7 @@ export function LanguageSelectionModal({
             <Button
               onClick={handleConfirm}
               className="flex-1"
-              disabled={isProcessing}
+              disabled={isProcessing || isChecking}
             >
               {isProcessing ? (
                 <>

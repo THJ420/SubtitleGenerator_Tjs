@@ -11,19 +11,22 @@ import {
   transcriptionReducer,
 } from "@/lib/transcription-state";
 import { extractAudioFromVideo, NoAudioDetectedError } from "@/lib/audio-utils";
-import type {
-  SubtitleWord,
-  WordStyleOverride,
-} from "@/lib/transcript-utils";
+import {
+  detectHardwareCapabilities,
+  type ModelSize,
+} from "@/lib/hardware-check";
+import type { SubtitleWord, WordStyleOverride } from "@/lib/transcript-utils";
 import { getModelLoadingErrorMessage } from "@/lib/transcription-errors";
 import {
   clampProgressPercent,
   type ModelLoadingState,
 } from "@/lib/transcription-progress";
 export type { ModelLoadingState } from "@/lib/transcription-progress";
+/** Model identifiers are canonical in lib/hardware-check; re-exported here so
+ * existing imports of `ModelSize` from this hook keep working. */
+export type { ModelSize } from "@/lib/hardware-check";
 
 type DeviceType = "webgpu" | "wasm";
-export type ModelSize = "tiny" | "base" | "small";
 
 export type TranscriptionStatus =
   | "idle"
@@ -60,22 +63,14 @@ export const STATUS_MESSAGES: Record<TranscriptionStatus, string> = {
   ready: "Ready",
 };
 
+/**
+ * Reuse the shared hardware probe so device selection and model gating always
+ * agree on whether WebGPU is actually usable. `detectHardwareCapabilities`
+ * already treats a missing or failed adapter as unavailable.
+ */
 async function detectPreferredDevice(): Promise<DeviceType> {
-  if (
-    typeof navigator === "undefined" ||
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    typeof (navigator as any).gpu === "undefined"
-  ) {
-    return "wasm";
-  }
-
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const adapter = await (navigator as any).gpu.requestAdapter();
-    return adapter ? "webgpu" : "wasm";
-  } catch {
-    return "wasm";
-  }
+  const capabilities = await detectHardwareCapabilities();
+  return capabilities.webgpu ? "webgpu" : "wasm";
 }
 
 export function useTranscription() {
