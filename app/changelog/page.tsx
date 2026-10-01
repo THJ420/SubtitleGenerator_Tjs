@@ -8,7 +8,7 @@ import styles from "./changelog.module.css";
 export const metadata = {
   title: "Changelog",
   description:
-    "New features, improvements, and fixes in Based Subtitles. Follow the latest editor and export updates.",
+    "New features, improvements, and fixes in FatahTech Subtitles. Follow the latest editor and export updates.",
 };
 
 function formatDate(date: string) {
@@ -67,7 +67,7 @@ export default function ChangelogPage() {
     <div className={styles.page}>
       <header className={styles.header}>
         <div className={styles.headerInner}>
-          <Link href="/" aria-label="Based Subtitles home">
+          <Link href="/" aria-label="FatahTech Subtitles home">
             <LandingBrand />
           </Link>
           <Link href="/" className={styles.backLink}>

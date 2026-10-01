@@ -31,6 +31,11 @@ yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
 
+# local dev server artifacts
+/dev-server.log
+/dev-server.err.log
+/.dev-server.pid
+
 # env files (can opt-in for committing if needed)
 .env*
 

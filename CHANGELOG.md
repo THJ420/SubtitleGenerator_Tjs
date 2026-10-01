@@ -141,7 +141,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Installable Progressive Web App support — Based Subtitles can now be added to the home screen and launched in standalone app mode
+- Installable Progressive Web App support — FatahTech Subtitles can now be added to the home screen and launched in standalone app mode
 - Generated branded app icons using the existing BS monogram for Android, desktop install prompts, and Apple touch devices
 - Install banner — shows a native install prompt on supported browsers and Add to Home Screen instructions on iPhone/iPad Safari
 
@@ -312,7 +312,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Emoji picker integrated into the per-word style popover with search support
 - Emoji replace and overlay render in DOM preview, canvas compositing (3D depth mode), and video export
 - Emoji size scales with the word's font size — enlarging a word also enlarges its emoji
-- Branding watermark — toggleable "basedsubs.getbasedapps.com" text in the bottom-left corner, rendered in preview and baked into exported videos
+- Branding watermark — toggleable "fatahtech.com" text in the bottom-right corner, rendered in preview and baked into exported videos
 
 ### Fixed
 

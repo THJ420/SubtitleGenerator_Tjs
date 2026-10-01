@@ -16,7 +16,7 @@ interface BeforeInstallPromptEvent extends Event {
   userChoice: Promise<BeforeInstallPromptChoice>;
 }
 
-const DISMISS_KEY = "basedsubs:pwa-install-dismissed";
+const DISMISS_KEY = "fatahtech-subtitles:pwa-install-dismissed";
 
 function isStandaloneMode(): boolean {
   const nav = navigator as Navigator & { standalone?: boolean };
@@ -143,17 +143,17 @@ export function PwaInstallBanner(): JSX.Element | null {
   if (!installPrompt && !isIos) return null;
 
   const title = isIos
-    ? "Install Based Subtitles"
-    : "Add Based Subtitles to your device";
+    ? "Install FatahTech Subtitles"
+    : "Add FatahTech Subtitles to your device";
   const description = isIos
     ? 'Open the Share menu in Safari, then tap "Add to Home Screen".'
-    : "Install it for a faster, app-like experience with the Based Subs icon on your home screen.";
+    : "Install it for a faster, app-like experience with the FatahTech Subtitles icon on your home screen.";
 
   return (
     <div
       className="fixed inset-x-0 bottom-4 z-50 px-4"
       role="region"
-      aria-label="Install Based Subtitles"
+      aria-label="Install FatahTech Subtitles"
     >
       <div className="mx-auto max-w-xl overflow-hidden rounded-2xl border border-border bg-background/95 shadow-2xl backdrop-blur">
         <div className="flex items-start gap-3 p-4 sm:p-5">

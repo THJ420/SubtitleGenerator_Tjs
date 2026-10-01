@@ -43,7 +43,7 @@ const baseStyle: SubtitleStyle = {
   dynamicFrontYPosition: 75,
   dynamicFollowWord: false,
   textFadeIn: false,
-  brandingWatermark: true,
+  showWatermark: true,
   splitSubtitleMode: "none",
   verticalOffset: 0,
 };

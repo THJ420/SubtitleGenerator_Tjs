@@ -83,7 +83,7 @@ export function SiteFooter({
           <Link href="/changelog">v{APP_VERSION}</Link>
           <span>·</span>
           <a
-            href="https://github.com/deifos/basedsubtitles"
+            href="https://github.com/THJ420/SubtitleGenerator_Tjs"
             target="_blank"
             rel="noopener noreferrer"
             aria-label="GitHub repository"
@@ -100,7 +100,7 @@ export function SiteFooter({
     <footer className={`${styles.container} ${styles.footer}`}>
       <div className={styles.footerMain}>
         <div className={styles.footerAbout}>
-          <a href="#" aria-label="Based Subtitles home">
+          <a href="#" aria-label="FatahTech Subtitles home">
             <LandingBrand />
           </a>
           <p>
@@ -109,7 +109,7 @@ export function SiteFooter({
             Free. Local. Open source.
           </p>
           <a
-            href="https://github.com/deifos/basedsubtitles"
+            href="https://github.com/THJ420/SubtitleGenerator_Tjs"
             target="_blank"
             rel="noopener noreferrer"
             className={styles.footerGithub}
@@ -148,7 +148,7 @@ export function SiteFooter({
       </div>
       <div className={styles.footerBottom}>
         <span>
-          © {new Date().getFullYear()} basedsubtitles.{" "}
+          © {new Date().getFullYear()} FatahTech Subtitles.{" "}
           <Link href="/changelog">v{APP_VERSION}</Link>
         </span>
         <StackLinks />

@@ -8,6 +8,7 @@ import {
   type WordStyleOverride,
   processTranscriptChunks,
 } from "@/lib/transcript-utils";
+import { resolveChunkWords } from "@/lib/subtitle-timing";
 import { resolveFontFamily } from "@/lib/font-config";
 import { type FaceBounds } from "@/lib/render-subtitle";
 
@@ -55,6 +56,9 @@ export function isPhraseChunk(
 export const WATERMARK_FONT_FAMILY =
   'Arial, Helvetica, "Segoe UI", Roboto, sans-serif';
 
+/** Watermark burned into previews and exported videos when `showWatermark` is on. */
+export const WATERMARK_TEXT = "fatahtech.com";
+
 export function getBrandingWatermarkMetrics(width: number, height: number) {
   // Limit the mark by both dimensions so portrait video does not enlarge it.
   // No fixed pixel minimum: small previews must match the exported proportions.
@@ -70,9 +74,9 @@ export function drawBrandingWatermark(
   ctx: CanvasRenderingContext2D,
   w: number,
   h: number,
-  enabled?: boolean,
+  showWatermark?: boolean,
 ) {
-  if (enabled === false) return;
+  if (showWatermark === false) return;
   const { fontSize, shadowBlur, shadowOffsetY } = getBrandingWatermarkMetrics(
     w,
     h,
@@ -88,7 +92,7 @@ export function drawBrandingWatermark(
   ctx.shadowBlur = shadowBlur;
   ctx.shadowOffsetX = 0;
   ctx.shadowOffsetY = shadowOffsetY;
-  ctx.fillText("basedsubs.getbasedapps.com", w - paddingX, h - paddingY);
+  ctx.fillText(WATERMARK_TEXT, w - paddingX, h - paddingY);
   ctx.restore();
 }
 
@@ -868,8 +872,14 @@ export function renderSubtitle(
   // Display on Spoken: full phrase shown dim from phrase start, each word lights up
   // when spoken. Keep full text/words so layout is always stable.
   const displayText = chunk.text;
+  // Normal captions always render through the word pipeline so active-word
+  // highlighting, emphasis boxes, and per-word styles apply uniformly. Chunks
+  // without stored words (e.g. legacy or hand-edited data) get synthetic word
+  // timings on the fly rather than degrading to unstyled plain text.
   const chunkWords =
-    mode === "word" && chunk.styleOverride ? [chunk] : chunk.words;
+    mode === "word" && chunk.styleOverride
+      ? [chunk]
+      : resolveChunkWords<WordTiming>(chunk, style.dynamicEnabled);
   if (mode === "word") {
     style = {
       ...style,
@@ -1566,13 +1576,11 @@ export function renderDynamicBehindInExport(
   canvas: HTMLCanvasElement,
   currentTime: number,
 ) {
-  if (!chunk.words) {
-    // Fallback: render entire text as behind
-    renderDynamicWord(ctx, chunk.text, style, canvas);
-    return;
-  }
+  // Synthesize word timings when absent so manual subtitles keep per-word
+  // depth layering instead of falling back to a flat block of text.
+  const chunkWords = resolveChunkWords<WordTiming>(chunk, true);
 
-  const behindWords = chunk.words.filter((w) => w.dynamicPosition === "behind");
+  const behindWords = chunkWords.filter((w) => w.dynamicPosition === "behind");
   if (behindWords.length === 0) return;
 
   const behindText = behindWords.map((w) => w.text).join(" ");
@@ -1600,9 +1608,9 @@ export function renderDynamicFrontInExport(
   faceBounds: FaceBounds | null,
   currentTime: number,
 ) {
-  if (!chunk.words) return;
+  const chunkWords = resolveChunkWords<WordTiming>(chunk, true);
 
-  const frontWords = chunk.words.filter((w) => w.dynamicPosition === "front");
+  const frontWords = chunkWords.filter((w) => w.dynamicPosition === "front");
   if (frontWords.length === 0) return;
 
   const frontText = frontWords.map((w) => w.text).join(" ");

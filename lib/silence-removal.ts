@@ -40,6 +40,8 @@ export interface SilenceAdjustableChunk {
   subtitleHidden?: boolean;
   dynamicPosition?: "behind" | "front";
   styleOverride?: WordStyleOverride;
+  /** Explicit word timings, remapped with the chunk when cuts are applied. */
+  words?: { timestamp: [number, number] }[];
 }
 
 const SAMPLE_RATE = 16000;
@@ -249,6 +251,18 @@ export function adjustTranscriptChunksForSilenceRemoval<
               sourceTimestamp: chunk.sourceTimestamp.map((time) =>
                 sourceTimeToOutputTime(time, plan),
               ) as [number, number],
+            }
+          : {}),
+        // Remap stored word timings so per-word effects survive the cuts.
+        ...(chunk.words && chunk.words.length > 0
+          ? {
+              words: chunk.words.map((word) => ({
+                ...word,
+                timestamp: [
+                  sourceTimeToOutputTime(word.timestamp[0], plan),
+                  sourceTimeToOutputTime(word.timestamp[1], plan),
+                ] as [number, number],
+              })),
             }
           : {}),
       };

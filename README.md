@@ -1,4 +1,4 @@
-# BasedSubtitles
+# FatahTech Subtitles
 
 AI-powered subtitle generator that processes video and audio in your browser. No media uploads or accounts are required.
 

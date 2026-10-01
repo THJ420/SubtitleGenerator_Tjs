@@ -2,6 +2,22 @@ import {
   adjustTranscriptChunksForSilenceRemoval,
   createSilenceRemovalPlan,
 } from "./silence-removal";
+import type { SubtitleWordTiming } from "./subtitle-timing";
+import { applyChunkFlagsToWords } from "./subtitle-timing";
+
+// Word-timing helpers live in ./subtitle-timing alongside the timeline edit
+// logic that rescales them; re-exported here so transcript consumers keep a
+// single import site.
+export {
+  applyChunkFlagsToWords,
+  buildWordTimings,
+  resolveChunkWords,
+  rescaleWordTimings,
+  splitSubtitleWords,
+  updateChunkText,
+  type SubtitleWordTiming,
+  type WordTimedChunk,
+} from "./subtitle-timing";
 
 /**
  * Format seconds into a readable time format (MM:SS)
@@ -74,15 +90,18 @@ export interface WordStyleOverride {
   emojiScale?: number; // per-word emoji size multiplier (default 1.0)
 }
 
-export interface ProcessedWord {
-  text: string;
-  timestamp: [number, number];
-  sourceTimestamp?: [number, number];
+/**
+ * Word-level timing inside a transcript chunk. Aliased to the canonical
+ * definition in ./subtitle-timing, which documents the Whisper /
+ * transformers.js engine schema (`return_timestamps: "word"` produces one
+ * `{ text, timestamp: [start, end] }` entry per spoken word, each with a
+ * leading space that this app trims).
+ */
+export type SubtitleWord = SubtitleWordTiming;
+
+export interface ProcessedWord extends SubtitleWord {
+  /** Index of the source transcript chunk this word was derived from. */
   sourceIndex?: number;
-  disabled?: boolean;
-  subtitleHidden?: boolean;
-  dynamicPosition?: "behind" | "front";
-  styleOverride?: WordStyleOverride;
 }
 
 export interface ProcessedChunk {
@@ -107,6 +126,8 @@ interface SourceTranscript {
     subtitleHidden?: boolean;
     dynamicPosition?: "behind" | "front";
     styleOverride?: WordStyleOverride;
+    /** Explicit word timings (e.g. manual subtitles) - honored as-is. */
+    words?: SubtitleWord[];
   }>;
 }
 
@@ -116,7 +137,7 @@ interface SourceTranscript {
  * dynamicPosition (first word = "behind", rest = "front") to words
  * that don't already have a position set.
  */
-// WeakMap cache: transcript object → param string → result
+// WeakMap cache: transcript object -> param string -> result
 // Invalidates automatically when React replaces the transcript object on edits.
 const _chunksCache = new WeakMap<
   SourceTranscript,
@@ -239,6 +260,61 @@ function _processTranscriptChunks(
 
     const chunkDisabled = Boolean(chunk.disabled);
     const chunkHidden = Boolean(chunk.subtitleHidden);
+
+    // Chunks that already carry explicit word timings (e.g. manual
+    // subtitles) form their own phrase - never merge them into
+    // neighboring transcription words.
+    const explicitWordTimings = Array.isArray(chunk.words)
+      ? chunk.words.filter((word) => word.text.trim().length > 0)
+      : [];
+    if (explicitWordTimings.length > 0) {
+      flushGroup();
+      const flaggedWords = applyChunkFlagsToWords({
+        disabled: chunkDisabled,
+        subtitleHidden: chunkHidden,
+        words: explicitWordTimings,
+      });
+      const manualWords: ProcessedWord[] = flaggedWords.map((word) => ({
+        text: word.text.trim(),
+        timestamp: [word.timestamp[0], word.timestamp[1]] as [number, number],
+        ...(word.sourceTimestamp
+          ? {
+              sourceTimestamp: [
+                word.sourceTimestamp[0],
+                word.sourceTimestamp[1],
+              ] as [number, number],
+            }
+          : {}),
+        sourceIndex: index,
+        ...(word.disabled !== undefined ? { disabled: word.disabled } : {}),
+        ...(word.subtitleHidden !== undefined
+          ? { subtitleHidden: word.subtitleHidden }
+          : {}),
+        ...(word.dynamicPosition
+          ? { dynamicPosition: word.dynamicPosition }
+          : {}),
+        ...(word.styleOverride ? { styleOverride: word.styleOverride } : {}),
+      }));
+      // Match group behavior so depth layers keep working for manual text.
+      const positionedWords: ProcessedWord[] =
+        dynamicEnabled && manualWords.every((word) => !word.dynamicPosition)
+          ? manualWords.map((word, wordIndex) => ({
+              ...word,
+              dynamicPosition: wordIndex === 0 ? "behind" : "front",
+            }))
+          : manualWords;
+      processedChunks.push({
+        text:
+          trimmedText || positionedWords.map((word) => word.text).join(" "),
+        timestamp: [start, end],
+        sourceIndex: index,
+        disabled: chunkDisabled,
+        subtitleHidden: chunkHidden,
+        words: positionedWords,
+      });
+      return;
+    }
+
     const wordData: ProcessedWord = {
       text: trimmedText,
       timestamp: [start, end],

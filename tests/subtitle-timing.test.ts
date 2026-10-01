@@ -5,6 +5,12 @@ import {
   resetSubtitleTiming,
   restoreSubtitleTiming,
   parseSubtitleTime,
+  buildWordTimings,
+  resolveChunkWords,
+  rescaleWordTimings,
+  splitSubtitleWords,
+  updateChunkText,
+  type SubtitleWordTiming,
 } from "../lib/subtitle-timing";
 import {
   processTranscriptChunks,
@@ -251,4 +257,212 @@ test("cut exports keep edited and unedited words in a consistent grouping time b
   assert.equal(phrases.length, 1);
   assert.equal(phrases[0].text, "Hello world.");
   assert.deepEqual(edited[2].sourceTimestamp, [4.3, 4.5]);
+});
+
+// Interpolated word boundaries are compared with a tolerance because
+// start + (span * index) / count rounds differently than start + span/count.
+function assertClose(
+  actual: readonly number[],
+  expected: readonly number[],
+  message: string,
+) {
+  assert.equal(actual.length, expected.length, message);
+  for (let i = 0; i < expected.length; i += 1) {
+    assert.ok(
+      Math.abs(actual[i] - expected[i]) < 1e-9,
+      `${message}: [${actual}] vs [${expected}]`,
+    );
+  }
+}
+
+test("manual subtitle words interpolate across the chunk span without gaps", () => {
+  const words = buildWordTimings("  Ship   it now ", [1, 3]);
+  assert.deepEqual(
+    words.map((word) => word.text),
+    ["Ship", "it", "now"],
+  );
+  assertClose(words[0].timestamp, [1, 5 / 3], "first word span");
+  assertClose(words[1].timestamp, [5 / 3, 7 / 3], "second word span");
+  // The last word ends exactly at the chunk end so scrubbing stays in sync.
+  assertClose(words[2].timestamp, [7 / 3, 3], "last word span");
+  // Adjacent windows: no gaps and no overlaps between words.
+  for (let i = 1; i < words.length; i += 1) {
+    assert.equal(words[i].timestamp[0], words[i - 1].timestamp[1]);
+  }
+  assert.deepEqual(splitSubtitleWords("   "), []);
+  assert.deepEqual(buildWordTimings("one", [2, 5]), [
+    { text: "one", timestamp: [2, 5] },
+  ]);
+  // A degenerate span must not produce inverted or NaN windows.
+  for (const word of buildWordTimings("a b", [3, 1])) {
+    assert.ok(Number.isFinite(word.timestamp[0]));
+    assert.ok(word.timestamp[1] >= word.timestamp[0]);
+  }
+});
+
+test("a chunk without words resolves synthetic timings instead of plain text", () => {
+  const chunk = { text: "hello world", timestamp: [0, 4] as [number, number] };
+  const resolved = resolveChunkWords(chunk);
+  assert.deepEqual(
+    resolved.map((word) => word.text),
+    ["hello", "world"],
+  );
+  assert.deepEqual(resolved[0].timestamp, [0, 2]);
+  assert.deepEqual(resolved[1].timestamp, [2, 4]);
+  // Stored words win over synthesis, and are returned unchanged.
+  const stored = resolveChunkWords({
+    ...chunk,
+    words: [{ text: "hello", timestamp: [0.1, 0.5] }],
+  });
+  assert.deepEqual(stored[0].timestamp, [0.1, 0.5]);
+  // Depth layers assign a leading "behind" word so dynamic mode still works.
+  const dynamic = resolveChunkWords(chunk, true);
+  assert.equal(dynamic[0].dynamicPosition, "behind");
+  assert.equal(dynamic[1].dynamicPosition, "front");
+});
+
+test("manual subtitle chunks stay out of neighboring phrase grouping", () => {
+  const chunks: TranscriptionResult["chunks"] = [
+    { text: "Before", timestamp: [0, 0.5] },
+    {
+      text: "Manual line here",
+      timestamp: [0.6, 1.6],
+      words: buildWordTimings("Manual line here", [0.6, 1.6]),
+    },
+    { text: "After", timestamp: [1.7, 2] },
+  ];
+  const phrases = processTranscriptChunks({ chunks }, "phrase", 3);
+  assert.deepEqual(
+    phrases.map((phrase) => phrase.text),
+    ["Before", "Manual line here", "After"],
+  );
+  // The manual phrase keeps per-word timings, all owned by its own chunk.
+  const manual = phrases[1];
+  assert.equal(manual.words?.length, 3);
+  assert.deepEqual(
+    manual.words?.map((word) => word.text),
+    ["Manual", "line", "here"],
+  );
+  assert.equal(
+    manual.words?.every((word) => word.sourceIndex === 1),
+    true,
+  );
+});
+
+test("editing a manual subtitle rebuilds its word timings and keeps word styles", () => {
+  const words = buildWordTimings("One two", [0, 2]);
+  const wordsWithStyle = words.map((word, index) =>
+    index === 1 ? { ...word, styleOverride: { color: "#FF0000" } } : word,
+  );
+  const chunk = {
+    text: "One two",
+    timestamp: [0, 2] as [number, number],
+    words: wordsWithStyle,
+  };
+  const edited = updateChunkText(chunk, "Alpha beta gamma");
+  assert.equal(edited.text, "Alpha beta gamma");
+  assert.deepEqual(
+    edited.words?.map((word) => word.text),
+    ["Alpha", "beta", "gamma"],
+  );
+  // Word spans are re-interpolated over the same chunk window.
+  assert.deepEqual(edited.words?.[0].timestamp, [0, 2 / 3]);
+  assert.deepEqual(edited.words?.[2].timestamp, [4 / 3, 2]);
+  // Per-word styles are preserved by index.
+  assert.equal(edited.words?.[1].styleOverride?.color, "#FF0000");
+  // Chunks without stored words only change their text.
+  const plain: { text: string; words?: SubtitleWordTiming[] } =
+    updateChunkText({ text: "old", timestamp: [0, 1] }, " new text ");
+  assert.equal(plain.text, "new text");
+  assert.equal(plain.words, undefined);
+});
+
+test("moving or undoing a subtitle keeps its word timings in sync", () => {
+  const chunk = {
+    text: "a b",
+    timestamp: [1, 3] as [number, number],
+    words: buildWordTimings("a b", [1, 3]),
+  };
+  const moved = editSubtitleTiming([chunk], { first: 0, last: 0 }, "move", 2, 10);
+  assert.deepEqual(moved[0].timestamp, [3, 5]);
+  assert.deepEqual(moved[0].words?.map((word) => word.timestamp), [
+    [3, 4],
+    [4, 5],
+  ]);
+  const undone = restoreSubtitleTiming(moved, [chunk]);
+  assert.deepEqual(undone[0].timestamp, [1, 3]);
+  assert.deepEqual(undone[0].words?.map((word) => word.timestamp), [
+    [1, 2],
+    [2, 3],
+  ]);
+  // A zero-length target span collapses words without producing NaN.
+  for (const word of rescaleWordTimings(
+    buildWordTimings("a b c", [0, 3]),
+    [0, 3],
+    [5, 5],
+  )) {
+    assert.ok(Number.isFinite(word.timestamp[0]));
+    assert.ok(Number.isFinite(word.timestamp[1]));
+  }
+});
+
+test("cut exports remap manual word timings into the output time base", () => {
+  const chunks: TranscriptionResult["chunks"] = [
+    { text: "Cut.", timestamp: [0, 3], disabled: true },
+    {
+      text: "Manual words here",
+      timestamp: [4, 6],
+      words: buildWordTimings("Manual words here", [4, 6]),
+    },
+  ];
+  // Disabling the first chunk cuts [0, 3], shifting the manual chunk from
+  // [4, 6] in source time to [1, 3] in the output time base. The word windows
+  // are remapped through the same plan, so the relative 2/2/2 thirds survive.
+  const plan = createVideoCutPlan(6, [], chunks)!;
+  const output = adjustTranscriptChunksForSilenceRemoval(chunks, plan);
+  assert.equal(output.length, 1);
+  assert.deepEqual(output[0].timestamp, [1, 3]);
+  assertClose(
+    output[0].words!.flatMap((word) => word.timestamp),
+    [1, 5 / 3, 5 / 3, 7 / 3, 7 / 3, 3],
+    "remapped word spans",
+  );
+});
+
+test("word timings survive streaming ASR merges", () => {
+  const initial: TranscriptionResult = {
+    text: "One two",
+    chunks: [
+      { text: "One", timestamp: [0, 0.5] },
+      { text: "two", timestamp: [0.5, 1] },
+    ],
+  };
+  let state = transcriptionReducer(initialTranscriptionState, {
+    type: "worker",
+    result: initial,
+  });
+  // Simulate the user adding a manual subtitle.
+  state = transcriptionReducer(state, {
+    type: "edit",
+    value: (previous) => {
+      const chunk = {
+        text: "Manual line",
+        timestamp: [2, 4] as [number, number],
+        words: buildWordTimings("Manual line", [2, 4]),
+      };
+      return previous
+        ? { ...previous, chunks: [...previous.chunks, chunk] }
+        : previous;
+    },
+  });
+  assert.equal(state.result?.chunks.length, 3);
+  // A later worker snapshot must not drop the manual word timings.
+  state = transcriptionReducer(state, { type: "worker", result: initial });
+  const manual = state.result?.chunks.find(
+    (chunk) => chunk.timestamp[0] === 2,
+  );
+  assert.deepEqual(
+    manual?.words?.map((word) => word.text),
+    ["Manual", "line"],
+  );
 });

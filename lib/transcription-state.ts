@@ -1,5 +1,9 @@
 import type { SetStateAction } from "react";
 import type { TranscriptionResult } from "../hooks/useTranscription";
+import {
+  rescaleWordTimings,
+  type SubtitleWord,
+} from "../lib/transcript-utils";
 
 type Chunk = TranscriptionResult["chunks"][number];
 
@@ -27,6 +31,37 @@ const editableFields = [
   "dynamicPosition",
   "styleOverride",
 ] as const;
+
+/**
+ * Stretch or compress explicit word timings with the chunk they belong to.
+ * Keeps word-level effects glued to manual subtitles across merges.
+ */
+function syncChunkWords(
+  chunk: Chunk,
+  previousTimestamp: [number, number],
+): Chunk {
+  const words = Array.isArray(chunk.words) ? chunk.words : [];
+  if (words.length === 0) return chunk;
+  const rescaledWords = rescaleWordTimings(
+    words as SubtitleWord[],
+    previousTimestamp,
+    chunk.timestamp,
+  );
+  let unchanged = true;
+  for (let index = 0; index < rescaledWords.length; index += 1) {
+    const before = words[index];
+    const after = rescaledWords[index];
+    if (
+      before.text !== after.text ||
+      before.timestamp[0] !== after.timestamp[0] ||
+      before.timestamp[1] !== after.timestamp[1]
+    ) {
+      unchanged = false;
+      break;
+    }
+  }
+  return unchanged ? chunk : { ...chunk, words: rescaledWords };
+}
 
 /** Merge cumulative ASR snapshots without treating unedited ASR text as a user edit. */
 export function mergeTranscriptionUpdate(
@@ -88,14 +123,41 @@ export function mergeTranscriptionUpdate(
         sourceTimestamp: edited.sourceTimestamp,
       });
     }
+    // Keep manual word timings (and their per-word flags/styles) across ASR
+    // merges; otherwise an incoming worker snapshot would drop them and the
+    // subtitle would fall back to unstyled plain text.
+    if (Array.isArray(edited.words) && edited.words.length > 0) {
+      Object.assign(changes, { words: edited.words });
+    }
     if ("text" in changes) hasTextEdit = true;
-    return Object.keys(changes).length ? { ...chunk, ...changes } : chunk;
+    return Object.keys(changes).length
+      ? syncChunkWords({ ...chunk, ...changes }, chunk.timestamp)
+      : chunk;
   });
+
+  // Manual subtitles are user-authored and never appear in a worker snapshot,
+  // so carry them forward instead of deleting them mid-stream. A chunk that
+  // stores its own word timings identifies itself; if a snapshot chunk covers
+  // the same times, the ASR result wins.
+  const incomingKeys = new Set(incoming.chunks.map(key));
+  const manualChunks = previous.result.chunks.filter(
+    (chunk) =>
+      Array.isArray(chunk.words) &&
+      chunk.words.length > 0 &&
+      !incomingKeys.has(key(chunk)),
+  );
+  const mergedChunks =
+    manualChunks.length > 0
+      ? [...chunks, ...manualChunks].sort(
+          (a, b) => a.timestamp[0] - b.timestamp[0],
+        )
+      : chunks;
+
   return {
     ...incoming,
-    chunks,
+    chunks: mergedChunks,
     ...(hasTextEdit
-      ? { text: chunks.map((chunk) => chunk.text.trim()).join(" ") }
+      ? { text: mergedChunks.map((chunk) => chunk.text.trim()).join(" ") }
       : {}),
   };
 }

@@ -3,8 +3,8 @@ import type { MetadataRoute } from "next";
 export default function manifest(): MetadataRoute.Manifest {
   return {
     id: "/",
-    name: "Based Subtitles",
-    short_name: "BasedSubs",
+    name: "FatahTech Subtitles",
+    short_name: "FatahTech",
     description:
       "Generate professional subtitles for your videos with AI. 100% local, privacy-first subtitle generation powered by transformers.js.",
     start_url: "/",

@@ -374,7 +374,7 @@ export const changelog: ChangelogEntry[] = [
       {
         type: "added",
         description:
-          "Installable Progressive Web App support — Based Subtitles can now be added to the home screen and launched in standalone app mode",
+          "Installable Progressive Web App support — FatahTech Subtitles can now be added to the home screen and launched in standalone app mode",
       },
       {
         type: "added",
@@ -436,7 +436,7 @@ export const changelog: ChangelogEntry[] = [
       {
         type: "changed",
         description:
-          "Project is now open source — source code available on GitHub at github.com/deifos/basedsubtitles",
+          "Project is now open source — source code available on GitHub at github.com/THJ420/SubtitleGenerator_Tjs",
       },
     ],
   },
@@ -755,7 +755,7 @@ export const changelog: ChangelogEntry[] = [
       {
         type: "added",
         description:
-          'Branding watermark — toggleable "basedsubs.getbasedapps.com" text in the bottom-left corner, rendered in preview and baked into exported videos',
+          'Watermark — toggleable "fatahtech.com" text in the bottom-right corner, rendered in preview and baked into exported videos',
       },
     ],
   },

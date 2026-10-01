@@ -11,7 +11,10 @@ import {
   transcriptionReducer,
 } from "@/lib/transcription-state";
 import { extractAudioFromVideo, NoAudioDetectedError } from "@/lib/audio-utils";
-import type { WordStyleOverride } from "@/lib/transcript-utils";
+import type {
+  SubtitleWord,
+  WordStyleOverride,
+} from "@/lib/transcript-utils";
 import { getModelLoadingErrorMessage } from "@/lib/transcription-errors";
 import {
   clampProgressPercent,
@@ -41,6 +44,8 @@ export interface TranscriptionResult {
     subtitleHidden?: boolean;
     dynamicPosition?: "behind" | "front";
     styleOverride?: WordStyleOverride;
+    /** Explicit word timings (manual subtitles) — honored as-is. */
+    words?: SubtitleWord[];
   }>;
   generationTime?: number;
 }

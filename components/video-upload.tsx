@@ -48,6 +48,7 @@ import {
   drawBrandingWatermark,
   getBrandingWatermarkMetrics,
   WATERMARK_FONT_FAMILY,
+  WATERMARK_TEXT,
 } from "@/lib/export-renderer";
 import { computeCropX } from "@/lib/person-tracking";
 import {
@@ -767,8 +768,8 @@ const VideoUploadComponent = forwardRef<HTMLVideoElement, VideoUploadProps>(
           );
         }
 
-        // Step 5: Branding watermark
-        drawBrandingWatermark(ctx, w, h, subtitleStyle.brandingWatermark);
+        // Step 5: Watermark (fatahtech.com)
+        drawBrandingWatermark(ctx, w, h, subtitleStyle.showWatermark);
 
         animFrameRef.current = requestAnimationFrame(render);
       };
@@ -1006,8 +1007,8 @@ const VideoUploadComponent = forwardRef<HTMLVideoElement, VideoUploadProps>(
                     }}
                   />
                 )}
-                {/* Branding watermark DOM overlay (non-compositing mode) */}
-                {subtitleStyle.brandingWatermark !== false &&
+                {/* Watermark DOM overlay (non-compositing mode) */}
+                {subtitleStyle.showWatermark !== false &&
                   !compositingActive && (
                     <div
                       className="absolute bottom-[1.8%] right-[2.5%] pointer-events-none z-20"
@@ -1019,7 +1020,7 @@ const VideoUploadComponent = forwardRef<HTMLVideoElement, VideoUploadProps>(
                         textShadow: `0 ${watermark.shadowOffsetY}px ${watermark.shadowBlur}px rgba(0, 0, 0, 0.5)`,
                       }}
                     >
-                      basedsubs.getbasedapps.com
+                      {WATERMARK_TEXT}
                     </div>
                   )}
                 {/* Only depth text needs canvas layers; all other previews share

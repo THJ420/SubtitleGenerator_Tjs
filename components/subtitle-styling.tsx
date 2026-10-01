@@ -74,7 +74,7 @@ export interface SubtitleStyle {
   dynamicFrontYPosition: number; // front text fallback Y position 0-100 (default 75)
   dynamicFollowWord: boolean; // highlight spoken word in front text (phrase mode only)
   textFadeIn: boolean; // letter-by-letter fade-in effect
-  brandingWatermark: boolean; // show "basedsubs.getbasedapps.com" watermark
+  showWatermark: boolean; // draw the fatahtech.com watermark on previews and exports
   splitSubtitleMode: "none" | "above-below" | "left-right"; // split subtitle around head
   verticalOffset: number; // fine-tune vertical position in px, range -50..+50 (positive = down)
 }
@@ -1240,14 +1240,14 @@ export function SubtitleStyling({
         </div>
       </section>
 
-      {/* Branding watermark toggle */}
+      {/* Watermark toggle */}
       <div className={panelStyles.branding}>
         <div className="flex items-start gap-2.5">
           <Switch
             id={watermarkId}
-            checked={style.brandingWatermark !== false}
+            checked={style.showWatermark !== false}
             onCheckedChange={(checked) =>
-              onChange({ ...style, brandingWatermark: checked })
+              onChange({ ...style, showWatermark: checked })
             }
             className="mt-0.5 flex-shrink-0"
           />
@@ -1256,10 +1256,10 @@ export function SubtitleStyling({
               htmlFor={watermarkId}
               className="text-xs font-semibold leading-tight block cursor-pointer"
             >
-              Support basedsubtitles
+              Show Watermark (fatahtech.com)
             </label>
             <p className="text-[11px] text-black/60 leading-snug">
-              Support my work by keeping the watermark on your exports
+              Draw fatahtech.com in the bottom corner of the preview and export
             </p>
           </div>
         </div>

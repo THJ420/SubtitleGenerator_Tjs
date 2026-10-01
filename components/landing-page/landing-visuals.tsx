@@ -13,8 +13,8 @@ import styles from "./landing.module.css";
 export function LandingBrand({ compact = false }: { compact?: boolean }) {
   return (
     <span className={`${styles.brand} ${compact ? styles.brandCompact : ""}`}>
-      <span className={styles.brandMark}>BS</span>
-      <span>basedsubtitles</span>
+      <span className={styles.brandMark}>FT</span>
+      <span>FatahTech Subtitles</span>
     </span>
   );
 }

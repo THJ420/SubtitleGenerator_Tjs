@@ -34,6 +34,7 @@ import {
 } from "@/components/subtitle-styling";
 import { WordStylePopover } from "@/components/word-style-popover";
 import { Button } from "@/components/ui/button";
+import { Switch } from "@/components/ui/switch";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import {
   restoreSubtitleTiming,
@@ -136,7 +137,7 @@ const DEFAULT_SUBTITLE_STYLE: SubtitleStyle = {
   dynamicFrontYPosition: 75,
   dynamicFollowWord: false,
   textFadeIn: false,
-  brandingWatermark: true,
+  showWatermark: true,
   splitSubtitleMode: "none",
   verticalOffset: -10,
 };
@@ -824,17 +825,17 @@ export function MainApp({
       data-editing={result !== null}
     >
       {!isPreparingTranscription ? (
-        <h1 className="sr-only">Based Subtitles video editor</h1>
+        <h1 className="sr-only">FatahTech Subtitles video editor</h1>
       ) : null}
       <header className={styles.header}>
         <button
           type="button"
           className={styles.brand}
           onClick={() => setShowAboutSheet(true)}
-          aria-label="About Based Subtitles"
+          aria-label="About FatahTech Subtitles"
         >
-          <span className={styles.brandMark}>BS</span>
-          <span>basedsubtitles</span>
+          <span className={styles.brandMark}>FT</span>
+          <span>FatahTech Subtitles</span>
         </button>
         <span className={styles.projectName} title={uploadedFile?.name}>
           {uploadedFile?.name || "Untitled Project"}
@@ -1143,6 +1144,29 @@ export function MainApp({
                           <SelectItem value="9:16">Portrait · 9:16</SelectItem>
                         </SelectContent>
                       </Select>
+                    </div>
+                    {/* Watermark toggle — live preview and exported video */}
+                    <div className={styles.settingGroup}>
+                      <div className="flex items-center justify-between gap-3">
+                        <label htmlFor="show-watermark">
+                          Show Watermark (fatahtech.com)
+                        </label>
+                        <Switch
+                          id="show-watermark"
+                          checked={subtitleStyle.showWatermark !== false}
+                          onCheckedChange={(checked) =>
+                            setSubtitleStyle((previous) => ({
+                              ...previous,
+                              showWatermark: checked,
+                            }))
+                          }
+                        />
+                      </div>
+                      <p>
+                        {subtitleStyle.showWatermark !== false
+                          ? "fatahtech.com is drawn in the bottom corner of the preview and the exported video."
+                          : "The watermark is omitted from the preview and the exported video."}
+                      </p>
                     </div>
                     {ratio === "9:16" ? (
                       <Button
@@ -1612,7 +1636,7 @@ export function MainApp({
       <Sheet open={showAboutSheet} onOpenChange={setShowAboutSheet}>
         <SheetContent side="right" className="rounded-l-2xl">
           <SheetHeader>
-            <SheetTitle>Based Subtitles</SheetTitle>
+            <SheetTitle>FatahTech Subtitles</SheetTitle>
             <SheetDescription>
               Video subtitles, made on your device.
             </SheetDescription>
@@ -1630,7 +1654,7 @@ export function MainApp({
             </p>
             <a href="/changelog">What is new · v{APP_VERSION}</a>
             <a
-              href="https://github.com/deifos/basedsubtitles"
+              href="https://github.com/THJ420/SubtitleGenerator_Tjs"
               target="_blank"
               rel="noopener noreferrer"
             >

@@ -7,7 +7,7 @@ export function LandingHeader() {
   return (
     <header className={styles.header}>
       <div className={`${styles.container} ${styles.headerInner}`}>
-        <a href="#" aria-label="Based Subtitles home">
+        <a href="#" aria-label="FatahTech Subtitles home">
           <LandingBrand />
         </a>
         <nav className={styles.navigation} aria-label="Main navigation">
@@ -18,7 +18,7 @@ export function LandingHeader() {
         </nav>
         <div className={styles.headerActions}>
           <a
-            href="https://github.com/deifos/basedsubtitles"
+            href="https://github.com/THJ420/SubtitleGenerator_Tjs"
             target="_blank"
             rel="noopener noreferrer"
             className={styles.sourceLink}

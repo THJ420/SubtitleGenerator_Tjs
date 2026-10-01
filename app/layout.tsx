@@ -287,10 +287,10 @@ export const viewport: Viewport = {
 
 export const metadata: Metadata = {
   metadataBase: new URL("https://basedsubs.getbasedapps.com"),
-  applicationName: "Based Subtitles",
+  applicationName: "FatahTech Subtitles",
   title: {
-    default: "Based Subtitles - AI Video Subtitle Generator",
-    template: "%s | Based Subtitles",
+    default: "FatahTech Subtitles - AI Video Subtitle Generator",
+    template: "%s | FatahTech Subtitles",
   },
   description:
     "Generate professional subtitles for your videos with AI. 100% local, privacy-first subtitle generation powered by transformers.js. No server uploads required.",
@@ -311,7 +311,7 @@ export const metadata: Metadata = {
   manifest: "/manifest.webmanifest",
   appleWebApp: {
     capable: true,
-    title: "Based Subtitles",
+    title: "FatahTech Subtitles",
     statusBarStyle: "default",
   },
   icons: {
@@ -331,22 +331,22 @@ export const metadata: Metadata = {
     type: "website",
     locale: "en_US",
     url: "https://basedsubs.getbasedapps.com",
-    title: "Based Subtitles - AI Video Subtitle Generator",
+    title: "FatahTech Subtitles - AI Video Subtitle Generator",
     description:
       "Generate professional subtitles for your videos with AI. 100% local, privacy-first subtitle generation.",
-    siteName: "Based Subtitles",
+    siteName: "FatahTech Subtitles",
     images: [
       {
         url: "https://deifos.github.io/images/basedsubs-og-banner.webp",
         width: 1200,
         height: 630,
-        alt: "Based Subtitles - AI Video Subtitle Generator",
+        alt: "FatahTech Subtitles - AI Video Subtitle Generator",
       },
     ],
   },
   twitter: {
     card: "summary_large_image",
-    title: "Based Subtitles - AI Video Subtitle Generator",
+    title: "FatahTech Subtitles - AI Video Subtitle Generator",
     description:
       "Generate professional subtitles for your videos with AI. 100% local, privacy-first subtitle generation.",
     creator: "@deifosv",

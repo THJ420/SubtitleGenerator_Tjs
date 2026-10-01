@@ -548,6 +548,15 @@ export function useVideoDownloadMediaBunny({
       const enabledChunks = processedChunks.filter((chunk) => {
         if ((mode === "phrase" || isDynamic) && isPhraseChunk(chunk)) {
           return !chunk.words.some((word) => {
+            // A word that owns its chunk (manual subtitle) carries its flags
+            // directly; transcribed words resolve back to the source chunk.
+            if (word.disabled || word.subtitleHidden) return true;
+            if (
+              Array.isArray(chunk.words) &&
+              chunk.words.every((w) => w.sourceIndex === word.sourceIndex)
+            ) {
+              return false;
+            }
             const originalChunk = transcriptChunksForExport.find(
               (candidate) =>
                 candidate.timestamp[0] === word.timestamp[0] &&
@@ -970,7 +979,7 @@ export function useVideoDownloadMediaBunny({
               ctx,
               canvas.width,
               canvas.height,
-              subtitleStyle.brandingWatermark,
+              subtitleStyle.showWatermark,
             );
             try {
               await videoSource.add(time, 1 / exportFps);
@@ -1162,7 +1171,7 @@ export function useVideoDownloadMediaBunny({
           ctx,
           canvas.width,
           canvas.height,
-          subtitleStyle.brandingWatermark,
+          subtitleStyle.showWatermark,
         );
 
         if (cancelContextRef.current.cancelRequested) {

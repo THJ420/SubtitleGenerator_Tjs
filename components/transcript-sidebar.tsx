@@ -10,9 +10,32 @@ import {
   type ProcessedChunk,
   type ProcessedWord,
 } from "@/lib/transcript-utils";
+import {
+  buildWordTimings,
+  parseSubtitleTime,
+  updateChunkText,
+  type SubtitleWordTiming,
+} from "@/lib/subtitle-timing";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Edit, Eye, EyeOff, SkipForward, Filter, Download } from "lucide-react";
+import {
+  Edit,
+  Eye,
+  EyeOff,
+  SkipForward,
+  Filter,
+  Download,
+  Plus,
+} from "lucide-react";
 import panelStyles from "@/components/editor-panels.module.css";
 
 interface TranscriptChunk {
@@ -22,6 +45,8 @@ interface TranscriptChunk {
   disabled?: boolean;
   subtitleHidden?: boolean;
   dynamicPosition?: "behind" | "front";
+  /** Explicit word timings (manual subtitles). */
+  words?: SubtitleWordTiming[];
 }
 
 interface TranscriptSidebarProps {
@@ -56,6 +81,11 @@ export function TranscriptSidebar({
   const [editingIndex, setEditingIndex] = useState<number | null>(null);
   const [editText, setEditText] = useState("");
   const [hideSkipped, setHideSkipped] = useState(false);
+  const [addOpen, setAddOpen] = useState(false);
+  const [draftStart, setDraftStart] = useState("0.000");
+  const [draftEnd, setDraftEnd] = useState("2.000");
+  const [draftText, setDraftText] = useState("");
+  const [addError, setAddError] = useState("");
   const transcriptContainerRef = useRef<HTMLDivElement>(null);
   const activeChunkRef = useRef<HTMLDivElement | null>(null);
 
@@ -162,6 +192,59 @@ export function TranscriptSidebar({
     URL.revokeObjectURL(url);
   };
 
+  const openAddSubtitle = () => {
+    const start = Number.isFinite(currentTime) ? Math.max(0, currentTime) : 0;
+    setDraftStart(start.toFixed(3));
+    setDraftEnd((start + 2).toFixed(3));
+    setDraftText("");
+    setAddError("");
+    setAddOpen(true);
+  };
+
+  const handleAddSubtitle = () => {
+    if (!onTranscriptUpdate) return;
+
+    const start = parseSubtitleTime(draftStart);
+    const end = parseSubtitleTime(draftEnd);
+    if (start === null || end === null) {
+      setAddError("Use seconds (12.5) or HH:MM:SS.mmm for both times.");
+      return;
+    }
+    if (end <= start) {
+      setAddError("End time must be after the start time.");
+      return;
+    }
+    const text = draftText.trim();
+    if (!text) {
+      setAddError("Enter the subtitle text.");
+      return;
+    }
+
+    // Insert the new subtitle with explicit per-word timings so it receives
+    // the same word-level effects (active-word highlighting, emphasis boxes,
+    // depth layers) as transcribed text. Then sort by start time so the
+    // timeline markers and binary-search lookups stay in sync with preview.
+    const words = buildWordTimings(text, [start, end] as [number, number]);
+    const chunks: TranscriptChunk[] = [
+      ...transcript.chunks,
+      {
+        text: words.map((word) => word.text).join(" "),
+        timestamp: [start, end] as [number, number],
+        words,
+      },
+    ].sort((a, b) => a.timestamp[0] - b.timestamp[0]);
+
+    onTranscriptUpdate({
+      text: chunks
+        .filter((chunk) => !chunk.disabled)
+        .map((chunk) => chunk.text)
+        .join(" "),
+      chunks,
+    });
+    setAddError("");
+    setAddOpen(false);
+  };
+
   const startEditing = (index: number) => {
     setEditingIndex(index);
     setEditText(displayChunks[index].text);
@@ -173,11 +256,12 @@ export function TranscriptSidebar({
     const updatedChunks = [...transcript.chunks];
 
     if (mode === "word") {
-      // For word mode, direct update - editingIndex maps directly to transcript.chunks
-      updatedChunks[editingIndex] = {
-        ...updatedChunks[editingIndex],
-        text: editText,
-      };
+      // For word mode, direct update - editingIndex maps directly to transcript.chunks.
+      // updateChunkText also rebuilds word timings for manual subtitles.
+      updatedChunks[editingIndex] = updateChunkText(
+        updatedChunks[editingIndex],
+        editText,
+      );
     } else if (mode === "phrase") {
       // For phrase/dynamic mode, we need to update the original word chunks that make up this phrase
       const phraseToEdit = displayChunks[editingIndex];
@@ -186,36 +270,51 @@ export function TranscriptSidebar({
         const newWords = editText.trim().split(/\s+/);
         const originalWords = phraseToEdit.words;
 
-        // Update each original chunk with the corresponding new word
-        // If there are more new words than original, concatenate extras to the last original word
-        // If there are fewer new words, extra original words are cleared (empty text is skipped by processTranscriptChunks)
-        originalWords.forEach((originalWord, wordIndex) => {
-          const originalChunkIndex = transcript.chunks.findIndex(
-            (chunk) =>
-              chunk.timestamp[0] === originalWord.timestamp[0] &&
-              chunk.timestamp[1] === originalWord.timestamp[1],
+        // A chunk that owns its word timings (manual subtitle) is edited as a
+        // unit: rebuild its words across its span so effects persist.
+        const ownedChunkIndex = originalWords.every(
+          (word) => word.sourceIndex === originalWords[0].sourceIndex,
+        )
+          ? originalWords[0].sourceIndex
+          : undefined;
+        if (ownedChunkIndex !== undefined) {
+          updatedChunks[ownedChunkIndex] = updateChunkText(
+            updatedChunks[ownedChunkIndex],
+            editText,
           );
+        } else {
+          // Transcribed phrases map back to their own source word chunks.
+          // Update each original chunk with the corresponding new word.
+          // If there are more new words than original, concatenate extras to the last original word
+          // If there are fewer new words, extra original words are cleared (empty text is skipped by processTranscriptChunks)
+          originalWords.forEach((originalWord, wordIndex) => {
+            const originalChunkIndex = transcript.chunks.findIndex(
+              (chunk) =>
+                chunk.timestamp[0] === originalWord.timestamp[0] &&
+                chunk.timestamp[1] === originalWord.timestamp[1],
+            );
 
-          if (originalChunkIndex !== -1) {
-            let newText: string;
+            if (originalChunkIndex !== -1) {
+              let newText: string;
 
-            if (wordIndex === originalWords.length - 1) {
-              // This is the last original word - concatenate all remaining new words
-              newText = newWords.slice(wordIndex).join(" ");
-            } else if (wordIndex < newWords.length) {
-              // Not the last original word, take the corresponding new word
-              newText = newWords[wordIndex];
-            } else {
-              // Fewer new words than original - clear this word
-              newText = "";
+              if (wordIndex === originalWords.length - 1) {
+                // This is the last original word - concatenate all remaining new words
+                newText = newWords.slice(wordIndex).join(" ");
+              } else if (wordIndex < newWords.length) {
+                // Not the last original word, take the corresponding new word
+                newText = newWords[wordIndex];
+              } else {
+                // Fewer new words than original - clear this word
+                newText = "";
+              }
+
+              updatedChunks[originalChunkIndex] = {
+                ...updatedChunks[originalChunkIndex],
+                text: newText,
+              };
             }
-
-            updatedChunks[originalChunkIndex] = {
-              ...updatedChunks[originalChunkIndex],
-              text: newText,
-            };
-          }
-        });
+          });
+        }
       }
     }
 
@@ -368,26 +467,39 @@ export function TranscriptSidebar({
             ? `${skippedCount} removed · ${hiddenCount} hidden`
             : `${displayChunks.length} ${mode === "word" ? "words" : "lines"}`}
         </span>
-        {skippedCount + hiddenCount > 0 && (
-          <button
+        <div className="flex items-center gap-2">
+          {skippedCount + hiddenCount > 0 && (
+            <button
+              type="button"
+              aria-pressed={hideSkipped}
+              onClick={() => setHideSkipped((v) => !v)}
+              className={`inline-flex items-center gap-1.5 rounded px-2 py-1 text-xs font-medium transition-colors ${
+                hideSkipped
+                  ? "bg-primary text-primary-foreground"
+                  : "bg-yellow-100 text-yellow-800 hover:bg-yellow-200"
+              }`}
+              title={
+                hideSkipped
+                  ? "Show all segments"
+                  : "Hide skipped and hidden segments"
+              }
+            >
+              <Filter className="h-3 w-3" />
+              {hideSkipped ? "Show all" : "Hide inactive"}
+            </button>
+          )}
+          <Button
             type="button"
-            aria-pressed={hideSkipped}
-            onClick={() => setHideSkipped((v) => !v)}
-            className={`inline-flex items-center gap-1.5 rounded px-2 py-1 text-xs font-medium transition-colors ${
-              hideSkipped
-                ? "bg-primary text-primary-foreground"
-                : "bg-yellow-100 text-yellow-800 hover:bg-yellow-200"
-            }`}
-            title={
-              hideSkipped
-                ? "Show all segments"
-                : "Hide skipped and hidden segments"
-            }
+            variant="outline"
+            onClick={openAddSubtitle}
+            disabled={!onTranscriptUpdate}
+            className="h-7 gap-1 px-2 text-xs"
+            title="Add a subtitle manually"
           >
-            <Filter className="h-3 w-3" />
-            {hideSkipped ? "Show all" : "Hide inactive"}
-          </button>
-        )}
+            <Plus className="h-3 w-3" />
+            Add Subtitle
+          </Button>
+        </div>
       </div>
 
       <ScrollArea
@@ -629,6 +741,91 @@ export function TranscriptSidebar({
           </Button>
         </div>
       </div>
+
+      {/* Manual subtitle insertion */}
+      <Dialog
+        open={addOpen}
+        onOpenChange={(open) => {
+          setAddOpen(open);
+          if (!open) setAddError("");
+        }}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Add subtitle</DialogTitle>
+            <DialogDescription>
+              Times accept seconds (12.5) or HH:MM:SS.mmm. The subtitle is
+              inserted and sorted by start time.
+            </DialogDescription>
+          </DialogHeader>
+          <form
+            className="space-y-3"
+            onKeyDown={(event) => event.stopPropagation()}
+            onSubmit={(event) => {
+              event.preventDefault();
+              handleAddSubtitle();
+            }}
+          >
+            <div className="grid grid-cols-2 gap-3">
+              <label className="space-y-1">
+                <span className="text-xs font-semibold">Start time</span>
+                <Input
+                  aria-label="Subtitle start time"
+                  aria-invalid={Boolean(addError)}
+                  inputMode="decimal"
+                  placeholder="0.000"
+                  value={draftStart}
+                  onChange={(event) => {
+                    setDraftStart(event.target.value);
+                    setAddError("");
+                  }}
+                />
+              </label>
+              <label className="space-y-1">
+                <span className="text-xs font-semibold">End time</span>
+                <Input
+                  aria-label="Subtitle end time"
+                  aria-invalid={Boolean(addError)}
+                  inputMode="decimal"
+                  placeholder="2.000"
+                  value={draftEnd}
+                  onChange={(event) => {
+                    setDraftEnd(event.target.value);
+                    setAddError("");
+                  }}
+                />
+              </label>
+            </div>
+            <label className="block space-y-1">
+              <span className="text-xs font-semibold">Subtitle text</span>
+              <Input
+                aria-label="Subtitle text"
+                placeholder="Words shown on screen"
+                value={draftText}
+                onChange={(event) => {
+                  setDraftText(event.target.value);
+                  setAddError("");
+                }}
+              />
+            </label>
+            {addError ? (
+              <p role="alert" className="text-xs text-destructive">
+                {addError}
+              </p>
+            ) : null}
+            <DialogFooter>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setAddOpen(false)}
+              >
+                Cancel
+              </Button>
+              <Button type="submit">Add subtitle</Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

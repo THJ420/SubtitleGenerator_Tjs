@@ -10,6 +10,7 @@ import {
   type WordStyleOverride,
 } from "@/lib/transcript-utils";
 import { resolveFontFamily } from "@/lib/font-config";
+import { resolveChunkWords } from "@/lib/subtitle-timing";
 
 interface TranscriptData {
   text: string;
@@ -386,9 +387,12 @@ export function renderDynamicBehindText(
 
   const currentChunk = binarySearchActiveChunk(enabledChunks, currentTime);
 
-  if (!currentChunk || !currentChunk.words) return;
+  if (!currentChunk) return;
+  // Synthesize word timings when a chunk carries none, so manual subtitles
+  // still render with depth layering instead of disappearing.
+  const chunkWords = resolveChunkWords<WordTiming>(currentChunk, true);
 
-  const behindWords = currentChunk.words.filter(
+  const behindWords = chunkWords.filter(
     (w) => w.dynamicPosition === "behind",
   );
   if (behindWords.length === 0) return;
@@ -439,9 +443,12 @@ export function renderDynamicFrontText(
 
   const currentChunk = binarySearchActiveChunk(enabledChunks, currentTime);
 
-  if (!currentChunk || !currentChunk.words) return;
+  if (!currentChunk) return;
+  // Synthesize word timings when a chunk carries none, so manual subtitles
+  // still render with depth layering instead of disappearing.
+  const chunkWords = resolveChunkWords<WordTiming>(currentChunk, true);
 
-  const frontWords = currentChunk.words.filter(
+  const frontWords = chunkWords.filter(
     (w) => w.dynamicPosition === "front",
   );
   if (frontWords.length === 0) return;
@@ -849,8 +856,12 @@ function renderChunkToCanvas(
   // Display on Spoken: full phrase shown dim from phrase start, each word lights up
   // when spoken. Keep full text/words so layout is always stable.
   const displayText = chunk.text;
+  // Fall back to synthetic word timings so a chunk without stored words
+  // still renders through the word pipeline (highlighting, boxes, styles).
   const chunkWords =
-    mode === "word" && chunk.styleOverride ? [chunk] : chunk.words;
+    mode === "word" && chunk.styleOverride
+      ? [chunk]
+      : resolveChunkWords<WordTiming>(chunk, style.dynamicEnabled);
   if (mode === "word") {
     style = {
       ...style,

@@ -5,6 +5,7 @@ import { SubtitleStyle, FONT_FAMILIES } from "./subtitle-styling";
 import {
   processTranscriptChunks,
   binarySearchActiveChunk,
+  resolveChunkWords,
   type ProcessedChunk,
   type ProcessedWord,
   type WordStyleOverride,
@@ -352,8 +353,10 @@ export function VideoCaption({
   const getCurrentWordInPhrase = (
     chunk: ProcessedChunk,
   ): ProcessedWord | undefined => {
-    if (mode !== "phrase" || !chunk.words) return undefined;
-    return chunk.words.find(
+    if (mode !== "phrase") return undefined;
+    // Synthesize word timings when a chunk has none (e.g. manual
+    // subtitles), so active-word highlighting still advances per word.
+    return resolveChunkWords<ProcessedWord>(chunk, style.dynamicEnabled).find(
       (word) =>
         currentTime >= word.timestamp[0] && currentTime <= word.timestamp[1],
     );
@@ -415,7 +418,7 @@ export function VideoCaption({
   // mix-blend-mode: difference can reach the video behind them
   const hasKnockout =
     mode === "phrase" &&
-    currentChunk.words?.some(
+    resolveChunkWords<ProcessedWord>(currentChunk, style.dynamicEnabled).some(
       (w: ProcessedWord) => w.styleOverride?.effect === "knockout",
     );
 
@@ -470,17 +473,15 @@ export function VideoCaption({
       );
     }
 
-    if (!currentChunk.words) {
-      return (
-        <span style={{ ...baseTypographyStyles, ...metallicTypographyStyles }}>
-          {text}
-        </span>
-      );
-    }
-
+    // Always render through the word pipeline; resolveChunkWords synthesizes
+    // timings for chunks without stored words so highlighting, emphasis
+    // boxes, and per-word styles never fall back to plain text.
     return (
       <PhraseWordList
-        words={currentChunk.words}
+        words={resolveChunkWords<ProcessedWord>(
+          currentChunk,
+          style.dynamicEnabled,
+        )}
         currentWordInPhrase={currentWordInPhrase}
         currentTime={currentTime}
         style={style}
@@ -562,8 +563,12 @@ export function VideoCaption({
 
       const splitLine2 = splitWords.slice(splitPoint).join(" ");
       if (splitLine2) {
-        const line1Words = currentChunk.words?.slice(0, splitPoint);
-        const line2Words = currentChunk.words?.slice(splitPoint);
+        const splitWordsArray = resolveChunkWords<ProcessedWord>(
+          currentChunk,
+          style.dynamicEnabled,
+        );
+        const line1Words = splitWordsArray.slice(0, splitPoint);
+        const line2Words = splitWordsArray.slice(splitPoint);
         const isPortrait = ratio === "9:16";
         const blockStyle: React.CSSProperties = {
           fontFamily: style.fontFamily,
