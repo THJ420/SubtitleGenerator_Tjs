@@ -4,9 +4,12 @@ AI-powered subtitle generator that processes video and audio in your browser. No
 
 - Transcribes video audio using [Whisper.js](https://huggingface.co/docs/transformers.js) (WebGPU/WASM)
 - Exports MP4 with subtitles baked in using [Mediabunny](https://mediabunny.dev/)
+- Add subtitles manually at any time range, with the same styling as transcribed words
+- Optional `fatahtech.com` watermark, toggleable in the editor
 - Caches downloaded models in the browser for reuse. Model files and other app assets require network access when they are not cached.
 
-Live at [basedsubs.getbasedapps.com](https://basedsubs.getbasedapps.com)
+Repository: <https://github.com/THJ420/SubtitleGenerator_Tjs.git>
+Setup and maintenance guide: [instructions.md](./instructions.md)
 
 Current release: **2.7.0**. See [CHANGELOG.md](./CHANGELOG.md) for release details.
 
@@ -25,6 +28,8 @@ All model inference runs locally in the browser. Video and audio are processed o
 - **100% local** — audio never leaves your device
 - **100+ languages** — Whisper multilingual models (tiny/base/small)
 - **25+ Google Fonts** — Bangers, Bebas Neue, Permanent Marker, Montserrat, and more
+- **Manual subtitles** — add your own subtitle chunks at any time range; word timings are generated so all styles apply
+- **Custom watermark** — optional `fatahtech.com` mark, toggleable in the editor, burned into exports when on
 - **Per-word styling** — override font, size, color, and effects on individual words
 - **Caption placement** — drag and resize captions, with local or global placement
 - **Subtitle timing** — edit word or phrase start/end times, move subtitles on the timeline, and use Undo or Reset
@@ -50,6 +55,74 @@ Timing uses source-video seconds. Changes stay within the video and adjacent wor
 
 **Undo timing** restores the previous timing edit without changing text or styles. **Reset timing** restores original times if they do not overlap adjacent words. Timing changes do not move the original media ranges used to remove video sections.
 
+### Manual subtitle insertion
+
+Open the **Subtitles** tab and choose **Add Subtitle**. The form takes a start
+time, an end time, and the subtitle text. Both time fields accept plain seconds
+(`12.5`) or a timecode (`HH:MM:SS.mmm`); start time is pre-filled from the
+playhead.
+
+The new chunk is inserted and the transcript is re-sorted by start time, so
+timeline markers and preview scrubbing stay in sync.
+
+**Word timestamps.** Whisper emits one `{ text, timestamp: [start, end] }` entry
+per spoken word (`return_timestamps: "word"`), and the renderers rely on that
+`words` array to draw active-word highlighting, emphasis boxes, depth layers,
+and per-word styles. A manually added chunk originally stored text only, which
+forced the canvas and DOM renderers into an unstyled plain-text fallback.
+
+`buildWordTimings` in `lib/subtitle-timing.ts` now splits the text into trimmed
+words and interpolates each word's window across the chunk span:
+
+- Windows are **adjacent** — no gaps and no overlaps between words.
+- The **last word ends exactly at the chunk end**, so scrubbing stays glued to
+  the timeline.
+- Whitespace is normalized, so extra spaces never produce empty words.
+- Invalid or inverted spans cannot produce `NaN` or backwards windows.
+
+The result is that manually added lines receive the same treatment as
+transcribed text. Chunks that carry explicit word timings also form their own
+phrase during grouping, so a manual line never merges into neighbouring
+transcribed words.
+
+Editing a manual subtitle rebuilds its word timings across the chunk span while
+preserving per-word styles and depth positions by index. Word timings are also
+kept in sync through timeline moves, Undo, and silence-removal cut remapping.
+
+Renderers call `resolveChunkWords`, which returns the stored words or
+synthesizes them on the fly. A chunk without stored word timings can therefore
+never render as unstyled plain text.
+
+### Watermark
+
+The watermark reads **`fatahtech.com`** and is drawn from a single
+`WATERMARK_TEXT` constant in `lib/export-renderer.ts`, so preview and export can
+never drift apart.
+
+It is **on by default** and controlled by a single `showWatermark` state, wired
+into three render paths:
+
+| Path                            | Behavior                           |
+| ------------------------------- | ---------------------------------- |
+| Live preview canvas loop        | Drawn each frame when enabled      |
+| Live preview DOM overlay        | Shown when compositing is inactive |
+| Export frame context (MP4/WebM) | Burned into the encoded file       |
+
+Toggle it with **Show Watermark (fatahtech.com)** in the **Video** tab, or from
+the watermark switch in the **Style** tab. Turning it off omits the mark from
+the preview _and_ the exported video — it is not a preview-only setting.
+
+### ASR merge preservation
+
+Transcription streams partial results, and each new snapshot is merged into
+editor state by `mergeTranscriptionUpdate` in `lib/transcription-state.ts`.
+
+Manually added subtitles are user-authored and never appear in a worker
+snapshot, so the merge used to **drop them** on the next update — manual lines
+silently disappeared while transcription was still running. They are now carried
+forward and merged back into chronological order by start time. If an incoming
+snapshot covers the same times, the ASR result wins.
+
 ## Getting Started
 
 ```bash
@@ -57,7 +130,11 @@ npm ci
 npm run dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000).
+Open [http://localhost:3000](http://localhost:3000). To use a different port:
+
+```bash
+npm run dev -- -p 3001
+```
 
 ```bash
 npm run build   # production build
@@ -66,6 +143,9 @@ npm test        # regression tests
 npm run lint    # ESLint
 npm run format:check # Prettier check
 ```
+
+Requires **Node.js 20.9+**. See [instructions.md](./instructions.md) for
+prerequisites, background server execution, and troubleshooting.
 
 ## Architecture
 
@@ -121,7 +201,7 @@ Video Frames → BG Removal Worker → Masks[] → Composited Canvas
 | Compositing (BG removal / 3D) | Canvas loop → `lib/render-subtitle.ts`                         |
 | Export                        | `hooks/useVideoDownloadMediaBunny.ts` internal canvas renderer |
 
-The preview and export renderers share font resolution logic via `lib/font-config.ts`.
+The preview and export renderers share font resolution logic via `lib/font-config.ts`, and both draw the watermark from the same `WATERMARK_TEXT` constant, so preview and export stay visually identical.
 
 ### Video Export
 
@@ -169,11 +249,14 @@ hooks/
 lib/
   font-config.ts              # Shared font map (CSS vars → canvas names)
   render-subtitle.ts          # Canvas subtitle rendering (preview)
+  export-renderer.ts          # Canvas subtitle rendering + watermark (export)
   person-tracking.ts          # Face position interpolation
   audio-utils.ts              # Audio extraction
   recording-audio.ts          # AudioWorklet capture and AAC queue
-  subtitle-timing.ts          # Timing bounds, edits, and reset
+  subtitle-timing.ts          # Timing bounds, edits, reset, and word timings
   transcript-utils.ts         # Phrase grouping and subtitle exports
+  silence-removal.ts          # Silence detection and output-time remapping
+  transcription-state.ts      # ASR snapshot merge reducer
   utils.ts                    # Shared UI utilities
   changelog.ts                # Version history data
 ```
@@ -186,7 +269,8 @@ lib/
 
 ## Contributing
 
-Pull requests are welcome. For larger changes, open an issue first to discuss the approach.
+Pull requests are welcome. For larger changes, open an issue first to discuss
+the approach. Repository: <https://github.com/THJ420/SubtitleGenerator_Tjs.git>
 
 ```bash
 npm run lint         # check for lint errors
